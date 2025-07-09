@@ -1,12 +1,11 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { initializeApp } from 'firebase/app';
-import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
+import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'firebase/auth';
 import { getFirestore, doc, onSnapshot, setDoc, updateDoc, collection, query, addDoc, deleteDoc } from 'firebase/firestore';
 import { getAnalytics } from "firebase/analytics";
-import { Landmark, CreditCard, TrendingUp, LayoutDashboard, Plus, Trash2, Edit, X, Copy, ArrowDown, ArrowUp } from 'lucide-react';
+import { Landmark, CreditCard, TrendingUp, LayoutDashboard, Plus, Trash2, Edit, X, Copy, ArrowDown, ArrowUp, LogOut, KeyRound } from 'lucide-react';
 
 // --- CONFIGURAÇÃO DO FIREBASE ---
-// Conectado ao projeto final do utilizador.
 const firebaseConfig = {
   apiKey: "AIzaSyARHXDG8M6Qd8U7UMsdjCFlDlwGpR6uors",
   authDomain: "meu-app-financeirov2.firebaseapp.com",
@@ -102,6 +101,84 @@ const StatCard = ({ title, value, icon, color, subValue }) => (
         </div>
     </div>
 );
+
+// --- ECRÃ DE LOGIN ---
+
+const LoginScreen = ({ showAlert }) => {
+    const [email, setEmail] = useState('');
+    const [password, setPassword] = useState('');
+    const [isLoading, setIsLoading] = useState(false);
+
+    const handleLogin = async (e) => {
+        e.preventDefault();
+        if (!email || !password) {
+            showAlert("Erro de Login", "Por favor, preencha o email e a senha.");
+            return;
+        }
+        setIsLoading(true);
+        try {
+            await signInWithEmailAndPassword(auth, email, password);
+            // O onAuthStateChanged no componente App irá tratar da mudança de ecrã.
+        } catch (error) {
+            console.error("Erro de login:", error.code);
+            let friendlyMessage = "Ocorreu um erro ao tentar fazer o login.";
+            if (error.code === 'auth/user-not-found' || error.code === 'auth/wrong-password' || error.code === 'auth/invalid-credential') {
+                friendlyMessage = "Email ou senha inválidos. Por favor, tente novamente.";
+            } else if (error.code === 'auth/invalid-email') {
+                friendlyMessage = "O formato do email é inválido.";
+            }
+            showAlert("Erro de Login", friendlyMessage);
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    return (
+        <div className="bg-gray-900 min-h-screen flex flex-col justify-center items-center p-4">
+            <div className="w-full max-w-md">
+                <div className="text-center mb-8">
+                    <h1 className="text-4xl font-bold text-white">Controle Financeiro</h1>
+                    <p className="text-gray-400 mt-2">Faça login para aceder ao seu painel.</p>
+                </div>
+                <form onSubmit={handleLogin} className="bg-gray-800 p-8 rounded-2xl shadow-2xl space-y-6">
+                    <div>
+                        <label className="block text-gray-400 mb-2" htmlFor="email">Email</label>
+                        <Input 
+                            id="email"
+                            type="email" 
+                            value={email} 
+                            onChange={(e) => setEmail(e.target.value)} 
+                            placeholder="seu.email@exemplo.com"
+                            disabled={isLoading}
+                        />
+                    </div>
+                    <div>
+                        <label className="block text-gray-400 mb-2" htmlFor="password">Senha</label>
+                        <Input 
+                            id="password"
+                            type="password" 
+                            value={password} 
+                            onChange={(e) => setPassword(e.target.value)} 
+                            placeholder="••••••••"
+                            disabled={isLoading}
+                        />
+                    </div>
+                    <Button type="submit" className="w-full" disabled={isLoading}>
+                        {isLoading ? (
+                            <div className="animate-spin rounded-full h-5 w-5 border-t-2 border-b-2 border-white"></div>
+                        ) : (
+                            <>
+                                <KeyRound size={16} />
+                                Entrar
+                            </>
+                        )}
+                    </Button>
+                </form>
+            </div>
+        </div>
+    );
+};
+
 
 // --- ABA DE GASTOS MENSAIS ---
 
@@ -601,11 +678,57 @@ const Dashboard = ({ db, userId, showAlert }) => {
     );
 };
 
-// --- COMPONENTE PRINCIPAL ---
+// --- COMPONENTE PRINCIPAL DA APLICAÇÃO ---
+
+const MainApp = ({ userId, showAlert }) => {
+    const [activeTab, setActiveTab] = useState('dashboard');
+
+    const handleLogout = async () => {
+        try {
+            await signOut(auth);
+        } catch (error) {
+            console.error("Erro ao fazer logout:", error);
+            showAlert("Erro de Logout", "Não foi possível terminar a sessão.");
+        }
+    };
+
+    const tabs = {
+        dashboard: { label: 'Dashboard', icon: <LayoutDashboard size={20} />, component: <Dashboard db={db} userId={userId} showAlert={showAlert} /> },
+        monthly: { label: 'Gastos Mensais', icon: <Landmark size={20} />, component: <MonthlyExpenses db={db} userId={userId} showAlert={showAlert} /> },
+        cards: { label: 'Cartões', icon: <CreditCard size={20} />, component: <CardControl db={db} userId={userId} showAlert={showAlert} /> },
+        investments: { label: 'Investimentos', icon: <TrendingUp size={20} />, component: <Investments db={db} userId={userId} showAlert={showAlert} /> },
+    };
+
+    return (
+        <div className="bg-gray-900 text-white min-h-screen font-sans">
+            <div className="container mx-auto p-4 md:p-8">
+                <header className="mb-8 flex justify-between items-center">
+                    <div>
+                        <h1 className="text-4xl font-bold text-center">Controlo Financeiro Inteligente</h1>
+                        <p className="text-center text-gray-400 mt-2">O seu assistente pessoal para uma vida financeira organizada.</p>
+                    </div>
+                    <Button onClick={handleLogout} variant="danger">
+                        <LogOut size={16} />
+                        Sair
+                    </Button>
+                </header>
+                <div className="bg-gray-800/50 backdrop-blur-sm rounded-2xl p-2 mb-8 flex flex-wrap justify-center gap-2">
+                    {Object.entries(tabs).map(([key, { label, icon }]) => (<button key={key} onClick={() => setActiveTab(key)} className={`flex-grow md:flex-grow-0 px-4 py-2 rounded-lg flex items-center justify-center gap-2 font-semibold transition ${activeTab === key ? 'bg-blue-600 text-white shadow-lg' : 'text-gray-300 hover:bg-gray-700/50'}`}>{icon}<span>{label}</span></button>))}
+                </div>
+                <main>{tabs[activeTab].component}</main>
+                <footer className="text-center text-gray-500 mt-12 text-sm">
+                    <p>O seu ID de utilizador (para referência): {userId || 'Nenhum'}</p>
+                    <p>Desenvolvido com React e Firebase.</p>
+                </footer>
+            </div>
+        </div>
+    );
+};
+
+// --- GESTOR DE AUTENTICAÇÃO ---
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState('dashboard');
-  const [userId, setUserId] = useState(null);
+  const [user, setUser] = useState(null);
   const [isAuthReady, setIsAuthReady] = useState(false);
   
   const [alertInfo, setAlertInfo] = useState({ isOpen: false, title: '', message: '' });
@@ -619,56 +742,21 @@ export default function App() {
   };
 
   useEffect(() => {
-    // Este novo método de autenticação é mais robusto.
-    // Ele primeiro regista um "ouvinte" que reage a mudanças no estado de login.
     const unsubscribe = onAuthStateChanged(auth, (user) => {
-        if (user) {
-            // Se um utilizador já estiver logado (de uma sessão anterior ou do login abaixo),
-            // guardamos o seu ID.
-            setUserId(user.uid);
-        } else {
-            // Se não houver nenhum utilizador, tentamos fazer um login anónimo.
-            signInAnonymously(auth).catch((error) => {
-                console.error("Falha no login anónimo:", error);
-                showAlert("Erro de Autenticação", "Não foi possível iniciar uma sessão anónima.");
-            });
-        }
-        // Marcamos a autenticação como pronta apenas depois de a verificação inicial ser feita.
+        setUser(user);
         setIsAuthReady(true);
     });
-
-    // Limpa o "ouvinte" quando o componente é desmontado para evitar fugas de memória.
     return () => unsubscribe();
   }, []);
   
-  const tabs = {
-    dashboard: { label: 'Dashboard', icon: <LayoutDashboard size={20} />, component: <Dashboard db={db} userId={userId} showAlert={showAlert} /> },
-    monthly: { label: 'Gastos Mensais', icon: <Landmark size={20} />, component: <MonthlyExpenses db={db} userId={userId} showAlert={showAlert} /> },
-    cards: { label: 'Cartões', icon: <CreditCard size={20} />, component: <CardControl db={db} userId={userId} showAlert={showAlert} /> },
-    investments: { label: 'Investimentos', icon: <TrendingUp size={20} />, component: <Investments db={db} userId={userId} showAlert={showAlert} /> },
-  };
-
   if (!isAuthReady) {
-    return (<div className="bg-gray-900 text-white min-h-screen flex flex-col justify-center items-center"><div className="animate-spin rounded-full h-16 w-16 border-t-2 border-b-2 border-blue-500"></div><p className="mt-4 text-lg">A carregar a sua carteira...</p></div>);
+    return (<div className="bg-gray-900 text-white min-h-screen flex flex-col justify-center items-center"><div className="animate-spin rounded-full h-16 w-16 border-t-2 border-b-2 border-blue-500"></div><p className="mt-4 text-lg">A carregar...</p></div>);
   }
 
   return (
-    <div className="bg-gray-900 text-white min-h-screen font-sans">
-      <AlertModal isOpen={alertInfo.isOpen} onClose={closeAlert} title={alertInfo.title} message={alertInfo.message} />
-      <div className="container mx-auto p-4 md:p-8">
-        <header className="mb-8">
-            <h1 className="text-4xl font-bold text-center">Controlo Financeiro Inteligente</h1>
-            <p className="text-center text-gray-400 mt-2">O seu assistente pessoal para uma vida financeira organizada.</p>
-        </header>
-        <div className="bg-gray-800/50 backdrop-blur-sm rounded-2xl p-2 mb-8 flex flex-wrap justify-center gap-2">
-          {Object.entries(tabs).map(([key, { label, icon }]) => (<button key={key} onClick={() => setActiveTab(key)} className={`flex-grow md:flex-grow-0 px-4 py-2 rounded-lg flex items-center justify-center gap-2 font-semibold transition ${activeTab === key ? 'bg-blue-600 text-white shadow-lg' : 'text-gray-300 hover:bg-gray-700/50'}`}>{icon}<span>{label}</span></button>))}
-        </div>
-        <main>{userId ? tabs[activeTab].component : <p>Erro de autenticação. Por favor, recarregue a página.</p>}</main>
-        <footer className="text-center text-gray-500 mt-12 text-sm">
-            <p>O seu ID de utilizador (para referência): {userId || 'Nenhum'}</p>
-            <p>Desenvolvido com React e Firebase.</p>
-        </footer>
-      </div>
-    </div>
+    <>
+        <AlertModal isOpen={alertInfo.isOpen} onClose={closeAlert} title={alertInfo.title} message={alertInfo.message} />
+        {user ? <MainApp userId={user.uid} showAlert={showAlert} /> : <LoginScreen showAlert={showAlert} />}
+    </>
   );
 }
