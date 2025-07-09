@@ -3,7 +3,7 @@ import { initializeApp } from 'firebase/app';
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'firebase/auth';
 import { getFirestore, doc, onSnapshot, setDoc, updateDoc, collection, query, addDoc, deleteDoc } from 'firebase/firestore';
 import { getAnalytics } from "firebase/analytics";
-import { Landmark, CreditCard, TrendingUp, LayoutDashboard, Plus, Trash2, Edit, X, Copy, ArrowDown, ArrowUp, LogOut, KeyRound } from 'lucide-react';
+import { Landmark, CreditCard, TrendingUp, LayoutDashboard, Plus, Trash2, Edit, X, Copy, ArrowDown, ArrowUp, LogOut, KeyRound, Target } from 'lucide-react';
 
 // --- CONFIGURAÇÃO DO FIREBASE ---
 const firebaseConfig = {
@@ -498,6 +498,7 @@ const CardControl = ({ db, userId, showAlert }) => {
 const Investments = ({ db, userId, showAlert }) => {
     const GOAL = 1000000;
     const MONTHLY_INTEREST_RATE = 0.01;
+    const TOTAL_PERIOD_MONTHS = 72; // 6 anos
 
     const [history, setHistory] = useState([]);
     const [isModalOpen, setIsModalOpen] = useState(false);
@@ -516,7 +517,10 @@ const Investments = ({ db, userId, showAlert }) => {
     useEffect(() => {
         if (!docRef) return;
         const unsubscribe = onSnapshot(docRef, (docSnap) => {
-            setHistory(docSnap.exists() ? docSnap.data().history || [] : [])
+            // Ordena o histórico por data ao receber os dados
+            const data = docSnap.exists() ? docSnap.data().history || [] : [];
+            const sortedData = [...data].sort((a, b) => a.date.localeCompare(b.date));
+            setHistory(sortedData);
         }, (error) => {
             console.error("Erro no listener do Firestore (Investimentos): ", error);
             showAlert("Erro de Leitura", `Não foi possível carregar o histórico de investimentos.\n\nErro: ${error.code}`);
@@ -584,6 +588,32 @@ const Investments = ({ db, userId, showAlert }) => {
 
     const currentTotal = history.length > 0 ? history[history.length - 1].total : 0;
     const progress = (currentTotal / GOAL) * 100;
+
+    const averageMonthlyInvestment = useMemo(() => {
+        const r = MONTHLY_INTEREST_RATE;
+        
+        if (history.length === 0) {
+            const n = TOTAL_PERIOD_MONTHS;
+            if (GOAL <= 0 || r <= 0 || n <= 0) return 0;
+            return GOAL * (r / (Math.pow(1 + r, n) - 1));
+        }
+
+        const firstContributionDate = new Date(history[0].date + '-02T00:00:00');
+        const today = new Date();
+
+        const monthsElapsed = (today.getFullYear() - firstContributionDate.getFullYear()) * 12 + (today.getMonth() - firstContributionDate.getMonth());
+        const monthsRemaining = Math.max(0, TOTAL_PERIOD_MONTHS - monthsElapsed);
+
+        if (monthsRemaining <= 0) return 0;
+
+        const n = monthsRemaining;
+        const fv_of_current = currentTotal * Math.pow(1 + r, n);
+        const remainingGoal = GOAL - fv_of_current;
+
+        if (remainingGoal <= 0) return 0;
+
+        return remainingGoal * (r / (Math.pow(1 + r, n) - 1));
+    }, [history, currentTotal]);
     
     return (
         <div className="space-y-8">
@@ -592,7 +622,21 @@ const Investments = ({ db, userId, showAlert }) => {
             <h2 className="text-3xl font-bold text-white">Plano de Investimentos: Rumo a R$ 1 Milhão</h2>
             
             <div className="bg-gray-800 rounded-2xl p-6 space-y-4"><h3 className="text-xl font-bold text-white">Progresso Atual</h3><div className="w-full bg-gray-700 rounded-full h-4"><div className="bg-green-500 h-4 rounded-full" style={{ width: `${Math.min(progress, 100)}%` }}></div></div><div className="flex justify-between text-white font-semibold"><span>R$ {currentTotal.toFixed(2)}</span><span>Meta: R$ {GOAL.toLocaleString('pt-BR', {minimumFractionDigits: 2})}</span></div><p className="text-center text-2xl font-bold text-green-400">{progress.toFixed(2)}%</p></div>
-            <div className="bg-gray-800 rounded-2xl p-6"><h3 className="text-lg font-bold text-white mb-4">Novo Aporte</h3><Button onClick={() => openModal()} className="w-full"><Plus size={16} /> Adicionar Aporte</Button></div>
+            
+            <div className="grid md:grid-cols-2 gap-6">
+                <div className="bg-gray-800 rounded-2xl p-6 flex flex-col justify-center">
+                    <h3 className="text-lg font-bold text-white mb-4">Novo Aporte</h3>
+                    <Button onClick={() => openModal()} className="w-full"><Plus size={16} /> Adicionar Aporte</Button>
+                </div>
+                <div className="bg-gray-800 rounded-2xl p-6 flex flex-col justify-center items-center text-center">
+                    <div className="flex items-center gap-3 mb-2">
+                        <Target size={24} className="text-blue-400" />
+                        <h3 className="text-lg font-bold text-white">Meta para 6 Anos</h3>
+                    </div>
+                    <p className="text-gray-400 text-sm mb-2">Para atingir R$ 1 milhão em 72 meses, o seu aporte mensal precisa ser de:</p>
+                    <p className="text-3xl font-bold text-blue-400">R$ {averageMonthlyInvestment.toFixed(2)}</p>
+                </div>
+            </div>
             
             <div className="bg-gray-800 rounded-2xl p-6">
                 <h3 className="text-xl font-bold text-white mb-4">Histórico de Aportes</h3>
