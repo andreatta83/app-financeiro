@@ -3,7 +3,7 @@ import { initializeApp } from 'firebase/app';
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'firebase/auth';
 import { getFirestore, doc, onSnapshot, setDoc, updateDoc, collection, query, addDoc, deleteDoc, getDoc, getDocs } from 'firebase/firestore';
 import { getAnalytics } from "firebase/analytics";
-import { Landmark, CreditCard, TrendingUp, LayoutDashboard, Plus, Trash2, Edit, X, Copy, ArrowDown, ArrowUp, LogOut, KeyRound, Target } from 'lucide-react';
+import { Landmark, CreditCard, TrendingUp, LayoutDashboard, Plus, Trash2, Edit, X, Copy, ArrowDown, ArrowUp, LogOut, KeyRound, Target, ChevronLeft, ChevronRight } from 'lucide-react';
 import { PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 
 
@@ -25,8 +25,14 @@ const db = getFirestore(app);
 const analytics = getAnalytics(app);
 const appId = firebaseConfig.projectId;
 
-// Lista de Categorias Padrão
+// Listas de Categorias e Tipos
 const CATEGORIES = ['Moradia', 'Transporte', 'Alimentação', 'Saúde', 'Lazer', 'Educação', 'Vestuário', 'Dívidas', 'Investimentos', 'Outros'];
+const EXPENSE_TYPES = {
+    fixed: 'Fixo',
+    essential: 'Essencial',
+    variable: 'Variável',
+    superfluous: 'Supérfluo'
+};
 const CATEGORY_COLORS = {
     'Moradia': '#FF6384',
     'Transporte': '#36A2EB',
@@ -205,8 +211,7 @@ const LoginScreen = ({ showAlert }) => {
 
 // --- ABA DE GASTOS MENSAIS ---
 
-const MonthlyExpenses = ({ db, userId, showAlert }) => {
-  const [currentMonth, setCurrentMonth] = useState(new Date().toISOString().slice(0, 7));
+const MonthlyExpenses = ({ db, userId, showAlert, currentMonth }) => {
   const [incomes, setIncomes] = useState([]);
   const [expenses, setExpenses] = useState({ fixed: [], essential: [], variable: [], superfluous: [] });
   
@@ -222,6 +227,37 @@ const MonthlyExpenses = ({ db, userId, showAlert }) => {
   
   useEffect(() => {
     if (!userId) return;
+
+    const carryOverData = async () => {
+        const [year, month] = currentMonth.split('-').map(Number);
+        const prevDate = new Date(year, month - 2, 1);
+        const prevMonthStr = prevDate.toISOString().slice(0, 7);
+        
+        const prevDocRef = doc(db, 'artifacts', appId, 'users', userId, 'monthlyData', prevMonthStr);
+        const prevDocSnap = await getDoc(prevDocRef);
+
+        if (prevDocSnap.exists()) {
+            const prevData = prevDocSnap.data();
+            const newId = () => Date.now().toString() + Math.random();
+
+            const newIncomes = (prevData.incomes || []).map(item => ({ ...item, id: newId() }));
+            const newExpenses = {
+                fixed: (prevData.expenses?.fixed || []).map(item => ({ ...item, id: newId() })),
+                essential: (prevData.expenses?.essential || []).map(item => ({ ...item, id: newId() })),
+                variable: (prevData.expenses?.variable || []).map(item => ({ ...item, id: newId() })),
+                superfluous: []
+            };
+
+            const newMonthData = {
+                incomes: newIncomes,
+                expenses: newExpenses
+            };
+
+            const currentDocRef = doc(db, 'artifacts', appId, 'users', userId, 'monthlyData', currentMonth);
+            await setDoc(currentDocRef, newMonthData);
+            showAlert("Mês Iniciado", "Dados do mês anterior foram copiados com sucesso!");
+        }
+    };
     
     const docRef = doc(db, 'artifacts', appId, 'users', userId, 'monthlyData', currentMonth);
     const unsubscribe = onSnapshot(docRef, (docSnap) => {
@@ -232,6 +268,7 @@ const MonthlyExpenses = ({ db, userId, showAlert }) => {
       } else {
         setIncomes([]);
         setExpenses({ fixed: [], essential: [], variable: [], superfluous: [] });
+        carryOverData();
       }
     }, (error) => {
         console.error("Erro no listener do Firestore (Gastos): ", error);
@@ -323,7 +360,10 @@ const MonthlyExpenses = ({ db, userId, showAlert }) => {
             </tr></thead>
             <tbody>
               {data.map(item => (<tr key={item.id} className="border-b border-gray-700/50">
-                <td className="p-3 text-white">{item.name}</td>
+                <td className="p-3 text-white">
+                    {item.name}
+                    {item.cardName && <span className="text-xs text-gray-400 ml-2">({item.cardName})</span>}
+                </td>
                 {isExpense && <td className="p-3 text-white"><span className="bg-gray-700 text-xs font-semibold mr-2 px-2.5 py-0.5 rounded-full">{item.category || 'N/A'}</span></td>}
                 <td className="p-3 text-white text-right">R$ {item.value.toFixed(2)}</td>
                 <td className="p-3 text-right">
@@ -349,7 +389,6 @@ const MonthlyExpenses = ({ db, userId, showAlert }) => {
   return (
     <div className="space-y-8">
         <ConfirmModal isOpen={isConfirmOpen} onClose={() => setIsConfirmOpen(false)} onConfirm={actionToConfirm} message="Tem a certeza que deseja apagar este item? Esta ação não pode ser desfeita."/>
-        <div className="flex justify-between items-center bg-gray-800 p-4 rounded-2xl"><h2 className="text-2xl font-bold text-white">Controlo de {new Date(currentMonth + '-02').toLocaleString('pt-BR', { month: 'long', year: 'numeric' })}</h2><Input type="month" value={currentMonth} onChange={(e) => setCurrentMonth(e.target.value)} className="w-auto" /></div>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             <StatCard title="Total de Receitas" value={`R$ ${totalIncomes.toFixed(2)}`} icon={<ArrowUp size={24} />} color="bg-green-500/30 text-green-400" />
             <StatCard title="Total de Despesas" value={`R$ ${totalExpenses.toFixed(2)}`} icon={<ArrowDown size={24} />} color="bg-red-500/30 text-red-400" />
@@ -376,7 +415,7 @@ const MonthlyExpenses = ({ db, userId, showAlert }) => {
 
 // --- ABA DE CONTROLO DE CARTÕES ---
 
-const CardControl = ({ db, userId, showAlert }) => {
+const CardControl = ({ db, userId, showAlert, currentMonth }) => {
     const [cards, setCards] = useState([]);
     const [isCardModalOpen, setIsCardModalOpen] = useState(false);
     const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false);
@@ -388,6 +427,7 @@ const CardControl = ({ db, userId, showAlert }) => {
     const [expenseDescription, setExpenseDescription] = useState('');
     const [expenseValue, setExpenseValue] = useState('');
     const [expenseCategory, setExpenseCategory] = useState('Outros');
+    const [expenseType, setExpenseType] = useState('variable');
 
     const [isConfirmOpen, setIsConfirmOpen] = useState(false);
     const [actionToConfirm, setActionToConfirm] = useState(null);
@@ -442,30 +482,66 @@ const CardControl = ({ db, userId, showAlert }) => {
 
     const openExpenseModal = (cardId) => { 
         setCurrentCardId(cardId); 
-        setExpenseDate(new Date().toISOString().slice(0, 10)); 
+        setExpenseDate(currentMonth + '-15'); // Padrão para o meio do mês selecionado
         setExpenseDescription(''); 
         setExpenseValue('');
         setExpenseCategory('Outros');
+        setExpenseType('variable');
         setIsExpenseModalOpen(true); 
     };
     const closeExpenseModal = () => setIsExpenseModalOpen(false);
 
     const handleSaveExpense = async () => {
-        if (!expenseDescription || !expenseValue || !expenseDate) return;
+        if (!expenseDescription || !expenseValue || !expenseDate || !expenseType || !expenseCategory) return;
         const value = parseFloat(expenseValue);
         if (isNaN(value)) return;
 
         const card = cards.find(c => c.id === currentCardId);
-        if (card) {
-            try {
-                const newExpense = { id: Date.now().toString(), date: expenseDate, description: expenseDescription, value, category: expenseCategory };
-                const updatedExpenses = [...(card.expenses || []), newExpense].sort((a, b) => new Date(b.date) - new Date(a.date));
-                await updateDoc(doc(cardsCollectionRef, currentCardId), { expenses: updatedExpenses });
-                closeExpenseModal();
-            } catch(error) {
-                console.error("Erro ao guardar gasto do cartão: ", error);
-                showAlert("Erro ao Guardar", `Não foi possível guardar o gasto.\n\nErro: ${error.code}`);
-            }
+        if (!card) return;
+
+        const expenseMonth = expenseDate.slice(0, 7);
+        const newExpenseId = Date.now().toString();
+        
+        const newExpenseForCard = { 
+            id: newExpenseId, 
+            date: expenseDate, 
+            description: expenseDescription, 
+            value, 
+            category: expenseCategory,
+            type: expenseType
+        };
+        
+        const newExpenseForMonthly = {
+            id: newExpenseId,
+            name: expenseDescription,
+            value,
+            category: expenseCategory,
+            cardName: card.name
+        };
+
+        const updatedCardExpenses = [...(card.expenses || []), newExpenseForCard].sort((a, b) => new Date(b.date) - new Date(a.date));
+        const cardDocRef = doc(cardsCollectionRef, currentCardId);
+        
+        const monthlyDocRef = doc(db, 'artifacts', appId, 'users', userId, 'monthlyData', expenseMonth);
+
+        try {
+            const monthlyDocSnap = await getDoc(monthlyDocRef);
+            const currentMonthlyData = monthlyDocSnap.exists() ? monthlyDocSnap.data() : { expenses: {} };
+            const currentTypeExpenses = currentMonthlyData.expenses[expenseType] || [];
+            const updatedTypeExpenses = [...currentTypeExpenses, newExpenseForMonthly];
+            
+            const updatedMonthlyExpenses = {
+                ...currentMonthlyData.expenses,
+                [expenseType]: updatedTypeExpenses
+            };
+
+            await updateDoc(cardDocRef, { expenses: updatedCardExpenses });
+            await setDoc(monthlyDocRef, { expenses: updatedMonthlyExpenses }, { merge: true });
+            
+            closeExpenseModal();
+        } catch(error) {
+            console.error("Erro ao guardar gasto sincronizado: ", error);
+            showAlert("Erro ao Guardar", `Não foi possível guardar o gasto.\n\nErro: ${error.code}`);
         }
     };
     
@@ -476,14 +552,35 @@ const CardControl = ({ db, userId, showAlert }) => {
 
     const performDeleteExpense = async (cardId, expenseId) => {
         const card = cards.find(c => c.id === cardId);
-        if (card) {
-            try {
-                const updatedExpenses = card.expenses.filter(e => e.id !== expenseId);
-                await updateDoc(doc(cardsCollectionRef, cardId), { expenses: updatedExpenses });
-            } catch(error) {
-                console.error("Erro ao apagar gasto do cartão: ", error);
-                showAlert("Erro ao Apagar", `Não foi possível apagar o gasto.\n\nErro: ${error.code}`);
+        const expenseToDelete = (card?.expenses || []).find(e => e.id === expenseId);
+        if (!card || !expenseToDelete) return;
+
+        const expenseMonth = expenseToDelete.date.slice(0, 7);
+        const expenseTypeToDelete = expenseToDelete.type;
+
+        const updatedCardExpenses = card.expenses.filter(e => e.id !== expenseId);
+        const cardDocRef = doc(cardsCollectionRef, cardId);
+
+        const monthlyDocRef = doc(db, 'artifacts', appId, 'users', userId, 'monthlyData', expenseMonth);
+
+        try {
+            const monthlyDocSnap = await getDoc(monthlyDocRef);
+            if(monthlyDocSnap.exists()) {
+                const currentMonthlyData = monthlyDocSnap.data();
+                const updatedMonthlyExpenses = { ...currentMonthlyData.expenses };
+
+                if (updatedMonthlyExpenses[expenseTypeToDelete]) {
+                    updatedMonthlyExpenses[expenseTypeToDelete] = updatedMonthlyExpenses[expenseTypeToDelete].filter(exp => exp.id !== expenseId);
+                }
+
+                await updateDoc(cardDocRef, { expenses: updatedCardExpenses });
+                await setDoc(monthlyDocRef, { expenses: updatedMonthlyExpenses }, { merge: true });
+            } else {
+                await updateDoc(cardDocRef, { expenses: updatedCardExpenses });
             }
+        } catch(error) {
+            console.error("Erro ao apagar gasto sincronizado: ", error);
+            showAlert("Erro ao Apagar", `Não foi possível apagar o gasto.\n\nErro: ${error.code}`);
         }
         setIsConfirmOpen(false);
     };
@@ -494,25 +591,26 @@ const CardControl = ({ db, userId, showAlert }) => {
     return (
         <div className="space-y-8">
             <ConfirmModal isOpen={isConfirmOpen} onClose={() => setIsConfirmOpen(false)} onConfirm={actionToConfirm} message="Tem a certeza que deseja apagar este item? Esta ação não pode ser desfeita."/>
-            <div className="flex justify-between items-center"><h2 className="text-3xl font-bold text-white">Controlo de Cartões</h2><Button onClick={() => openCardModal()}><Plus size={16} /> Novo Cartão</Button></div>
+            <div className="flex justify-between items-center"><h2 className="text-3xl font-bold text-white">Controle de Cartões</h2><Button onClick={() => openCardModal()}><Plus size={16} /> Novo Cartão</Button></div>
             {cards.length === 0 && <div className="text-center py-16 bg-gray-800 rounded-2xl"><CreditCard size={48} className="mx-auto text-gray-500" /><p className="mt-4 text-gray-400">Nenhum cartão adicionado.</p></div>}
             <div className="space-y-6">
                 {cards.map(card => {
-                    const total = (card.expenses || []).reduce((sum, exp) => sum + exp.value, 0);
+                    const monthlyExpenses = (card.expenses || []).filter(exp => exp.date.startsWith(currentMonth));
+                    const total = monthlyExpenses.reduce((sum, exp) => sum + exp.value, 0);
                     return (
                         <div key={card.id} className="bg-gray-800 rounded-2xl p-6">
-                            <div className="flex justify-between items-center mb-4 border-b border-gray-700 pb-4"><div><h3 className="text-xl font-bold text-white">{card.name}</h3><p className="text-red-400 font-semibold">Total: R$ {total.toFixed(2)}</p></div><div className="flex gap-2"><Button onClick={() => openExpenseModal(card.id)} variant="secondary"><Plus size={16} /> Adicionar Gasto</Button><Button onClick={() => requestDeleteCard(card.id)} variant="danger"><Trash2 size={16} /></Button></div></div>
+                            <div className="flex justify-between items-center mb-4 border-b border-gray-700 pb-4"><div><h3 className="text-xl font-bold text-white">{card.name}</h3><p className="text-red-400 font-semibold">Total do Mês: R$ {total.toFixed(2)}</p></div><div className="flex gap-2"><Button onClick={() => openExpenseModal(card.id)} variant="secondary"><Plus size={16} /> Adicionar Gasto</Button><Button onClick={() => requestDeleteCard(card.id)} variant="danger"><Trash2 size={16} /></Button></div></div>
                             <div className="overflow-x-auto"><table className="w-full text-left">
                                 <thead><tr className="border-b border-gray-700/50"><th className="p-2 text-sm font-semibold text-gray-400">Data</th><th className="p-2 text-sm font-semibold text-gray-400">Descrição</th><th className="p-2 text-sm font-semibold text-gray-400">Categoria</th><th className="p-2 text-sm font-semibold text-gray-400 text-right">Valor</th><th className="p-2 text-sm font-semibold text-gray-400 text-right">Ações</th></tr></thead>
                                 <tbody>
-                                    {(card.expenses || []).map(exp => (<tr key={exp.id}>
+                                    {monthlyExpenses.map(exp => (<tr key={exp.id}>
                                         <td className="p-2 text-white">{new Date(exp.date + 'T00:00:00').toLocaleDateString('pt-BR')}</td>
                                         <td className="p-2 text-white">{exp.description}</td>
                                         <td className="p-2 text-white"><span className="bg-gray-700 text-xs font-semibold mr-2 px-2.5 py-0.5 rounded-full">{exp.category || 'N/A'}</span></td>
                                         <td className="p-2 text-white text-right">R$ {exp.value.toFixed(2)}</td>
                                         <td className="p-2 text-right"><button onClick={() => requestDeleteExpense(card.id, exp.id)} className="text-red-400 hover:text-red-300"><Trash2 size={16} /></button></td>
                                     </tr>))}
-                                    {(card.expenses || []).length === 0 && <tr><td colSpan="5" className="text-center p-4 text-gray-500">Nenhum gasto.</td></tr>}
+                                    {monthlyExpenses.length === 0 && <tr><td colSpan="5" className="text-center p-4 text-gray-500">Nenhum gasto este mês.</td></tr>}
                                 </tbody>
                             </table></div>
                         </div>
@@ -524,6 +622,12 @@ const CardControl = ({ db, userId, showAlert }) => {
                 <label className="text-gray-400">Data</label><Input type="date" value={expenseDate} onChange={e => setExpenseDate(e.target.value)} />
                 <Input type="text" placeholder="Descrição" value={expenseDescription} onChange={e => setExpenseDescription(e.target.value)} />
                 <Input type="number" placeholder="Valor" value={expenseValue} onChange={e => setExpenseValue(e.target.value)} />
+                <div>
+                    <label className="block text-gray-400 mb-2 text-sm">Tipo de Gasto</label>
+                    <Select value={expenseType} onChange={e => setExpenseType(e.target.value)}>
+                        {Object.entries(EXPENSE_TYPES).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+                    </Select>
+                </div>
                 <div>
                     <label className="block text-gray-400 mb-2 text-sm">Categoria</label>
                     <Select value={expenseCategory} onChange={e => setExpenseCategory(e.target.value)}>
@@ -697,18 +801,16 @@ const Investments = ({ db, userId, showAlert }) => {
 
 // --- ABA DE DASHBOARD ---
 
-const Dashboard = ({ db, userId, showAlert }) => {
+const Dashboard = ({ db, userId, showAlert, currentMonth }) => {
     const [monthlyData, setMonthlyData] = useState(null);
     const [cardData, setCardData] = useState([]);
     const [investmentData, setInvestmentData] = useState(null);
-
-    const month = useMemo(() => new Date().toISOString().slice(0, 7), []);
 
     useEffect(() => {
         if (!userId) return;
         const unsubscribers = [];
 
-        const monthlyDocRef = doc(db, 'artifacts', appId, 'users', userId, 'monthlyData', month);
+        const monthlyDocRef = doc(db, 'artifacts', appId, 'users', userId, 'monthlyData', currentMonth);
         unsubscribers.push(onSnapshot(monthlyDocRef, (docSnap) => {
             setMonthlyData(docSnap.exists() ? docSnap.data() : { incomes: [], expenses: {} });
         }, (error) => {
@@ -733,24 +835,23 @@ const Dashboard = ({ db, userId, showAlert }) => {
         }));
 
         return () => unsubscribers.forEach(unsub => unsub());
-    }, [userId, db, month, showAlert]);
+    }, [userId, db, currentMonth, showAlert]);
 
     const summary = useMemo(() => {
         const totalIncomes = (monthlyData?.incomes || []).reduce((sum, i) => sum + i.value, 0);
         
         const monthlyExpenses = Object.values(monthlyData?.expenses || {}).flat();
-        const cardExpenses = cardData.flatMap(card => card.expenses || []);
-        const allExpenses = [...monthlyExpenses, ...cardExpenses];
         
-        const totalExpensesValue = allExpenses.reduce((sum, e) => sum + e.value, 0);
+        const totalExpensesValue = monthlyExpenses.reduce((sum, e) => sum + e.value, 0);
         const balance = totalIncomes - totalExpensesValue;
         
+        const cardExpenses = cardData.flatMap(card => card.expenses || []).filter(exp => exp.date.startsWith(currentMonth));
         const totalCardDebt = cardExpenses.reduce((sum, e) => sum + e.value, 0);
         
         const investmentHistory = investmentData?.history || [];
         const investmentTotal = investmentHistory.length > 0 ? investmentHistory[investmentHistory.length - 1].total : 0;
 
-        const categoryAggregates = allExpenses.reduce((acc, expense) => {
+        const categoryAggregates = monthlyExpenses.reduce((acc, expense) => {
             const category = expense.category || 'Outros';
             acc[category] = (acc[category] || 0) + expense.value;
             return acc;
@@ -770,7 +871,7 @@ const Dashboard = ({ db, userId, showAlert }) => {
             categoryAggregates,
             monthlyExpenseTypes
         };
-    }, [monthlyData, cardData, investmentData]);
+    }, [monthlyData, cardData, investmentData, currentMonth]);
 
     const pieChartData = useMemo(() => {
         return Object.entries(summary.categoryAggregates)
@@ -791,7 +892,7 @@ const Dashboard = ({ db, userId, showAlert }) => {
             <h2 className="text-3xl font-bold text-white">Dashboard Financeiro</h2>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                 <StatCard title="Saldo do Mês" value={`R$ ${summary.balance.toFixed(2)}`} icon={<Landmark size={24} />} color="bg-blue-500/30 text-blue-400" />
-                <StatCard title="Dívida Cartões" value={`R$ ${summary.totalCardDebt.toFixed(2)}`} icon={<CreditCard size={24} />} color="bg-red-500/30 text-red-400" />
+                <StatCard title="Gastos nos Cartões (Mês)" value={`R$ ${summary.totalCardDebt.toFixed(2)}`} icon={<CreditCard size={24} />} color="bg-red-500/30 text-red-400" />
                 <StatCard title="Total Investido" value={`R$ ${summary.investmentTotal.toFixed(2)}`} icon={<TrendingUp size={24} />} color="bg-green-500/30 text-green-400" />
                 <StatCard title="Receitas do Mês" value={`R$ ${summary.totalIncomes.toFixed(2)}`} icon={<ArrowUp size={24} />} color="bg-green-500/30 text-green-400" />
             </div>
@@ -799,11 +900,11 @@ const Dashboard = ({ db, userId, showAlert }) => {
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
                 <div className="bg-gray-800 rounded-2xl p-6">
                     <h3 className="text-xl font-bold text-white mb-4">Distribuição de Despesas do Mês</h3>
-                    {expenseTypeData.length > 0 ? (
+                    {expenseTypeData.length > 0 && summary.totalExpenses > 0 ? (
                         <div className="space-y-4">
                             <div className="w-full flex h-10 rounded-full overflow-hidden">
                                 {expenseTypeData.map(({ name, value }) => {
-                                    const percentage = summary.totalExpenses > 0 ? (value / summary.totalExpenses) * 100 : 0;
+                                    const percentage = (value / summary.totalExpenses) * 100;
                                     const colors = { 'Fixos': 'bg-red-500', 'Essenciais': 'bg-orange-500', 'Variáveis': 'bg-yellow-500', 'Supérfluos': 'bg-purple-500' };
                                     if (percentage === 0) return null;
                                     return <div key={name} className={colors[name]} style={{ width: `${percentage}%` }} title={`${name}: ${percentage.toFixed(1)}%`}></div>
@@ -859,6 +960,7 @@ const Dashboard = ({ db, userId, showAlert }) => {
 
 const MainApp = ({ userId, showAlert }) => {
     const [activeTab, setActiveTab] = useState('dashboard');
+    const [currentMonth, setCurrentMonth] = useState(new Date().toISOString().slice(0, 7));
 
     const handleLogout = async () => {
         try {
@@ -868,11 +970,18 @@ const MainApp = ({ userId, showAlert }) => {
             showAlert("Erro de Logout", "Não foi possível terminar a sessão.");
         }
     };
+    
+    const changeMonth = (offset) => {
+        const [year, month] = currentMonth.split('-').map(Number);
+        const date = new Date(year, month - 1, 1);
+        date.setMonth(date.getMonth() + offset);
+        setCurrentMonth(date.toISOString().slice(0, 7));
+    };
 
     const tabs = {
-        dashboard: { label: 'Dashboard', icon: <LayoutDashboard size={20} />, component: <Dashboard db={db} userId={userId} showAlert={showAlert} /> },
-        monthly: { label: 'Gastos Mensais', icon: <Landmark size={20} />, component: <MonthlyExpenses db={db} userId={userId} showAlert={showAlert} /> },
-        cards: { label: 'Cartões', icon: <CreditCard size={20} />, component: <CardControl db={db} userId={userId} showAlert={showAlert} /> },
+        dashboard: { label: 'Dashboard', icon: <LayoutDashboard size={20} />, component: <Dashboard db={db} userId={userId} showAlert={showAlert} currentMonth={currentMonth} /> },
+        monthly: { label: 'Gastos Mensais', icon: <Landmark size={20} />, component: <MonthlyExpenses db={db} userId={userId} showAlert={showAlert} currentMonth={currentMonth} /> },
+        cards: { label: 'Cartões', icon: <CreditCard size={20} />, component: <CardControl db={db} userId={userId} showAlert={showAlert} currentMonth={currentMonth} /> },
         investments: { label: 'Investimentos', icon: <TrendingUp size={20} />, component: <Investments db={db} userId={userId} showAlert={showAlert} /> },
     };
 
@@ -881,14 +990,25 @@ const MainApp = ({ userId, showAlert }) => {
             <div className="container mx-auto p-4 md:p-8">
                 <header className="mb-8 flex justify-between items-center">
                     <div>
-                        <h1 className="text-4xl font-bold text-center">Controlo Financeiro Inteligente</h1>
-                        <p className="text-center text-gray-400 mt-2">O seu assistente pessoal para uma vida financeira organizada.</p>
+                        <h1 className="text-4xl font-bold">Controle Financeiro Inteligente</h1>
+                        <p className="text-gray-400 mt-2">O seu assistente pessoal para uma vida financeira organizada.</p>
                     </div>
                     <Button onClick={handleLogout} variant="danger">
                         <LogOut size={16} />
                         Sair
                     </Button>
                 </header>
+                
+                {(activeTab === 'monthly' || activeTab === 'cards' || activeTab === 'dashboard') && (
+                    <div className="flex justify-center items-center bg-gray-800 p-4 rounded-2xl mb-8">
+                        <div className="flex items-center gap-4">
+                            <button onClick={() => changeMonth(-1)} className="p-2 rounded-full hover:bg-gray-700 transition"><ChevronLeft size={24} /></button>
+                            <span className="text-xl font-semibold w-48 text-center">{new Date(currentMonth + '-02').toLocaleString('pt-BR', { month: 'long', year: 'numeric' })}</span>
+                            <button onClick={() => changeMonth(1)} className="p-2 rounded-full hover:bg-gray-700 transition"><ChevronRight size={24} /></button>
+                        </div>
+                    </div>
+                )}
+
                 <div className="bg-gray-800/50 backdrop-blur-sm rounded-2xl p-2 mb-8 flex flex-wrap justify-center gap-2">
                     {Object.entries(tabs).map(([key, { label, icon }]) => (<button key={key} onClick={() => setActiveTab(key)} className={`flex-grow md:flex-grow-0 px-4 py-2 rounded-lg flex items-center justify-center gap-2 font-semibold transition ${activeTab === key ? 'bg-blue-600 text-white shadow-lg' : 'text-gray-300 hover:bg-gray-700/50'}`}>{icon}<span>{label}</span></button>))}
                 </div>
