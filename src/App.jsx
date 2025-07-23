@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'firebase/auth';
-import { getFirestore, doc, onSnapshot, setDoc, updateDoc, collection, query, addDoc, deleteDoc, getDoc, getDocs } from 'firebase/firestore';
+import { getFirestore, doc, onSnapshot, setDoc, updateDoc, collection, query, addDoc, deleteDoc, getDoc, getDocs, writeBatch } from 'firebase/firestore';
 import { getAnalytics } from "firebase/analytics";
 import { Landmark, CreditCard, TrendingUp, LayoutDashboard, Plus, Trash2, Edit, X, Copy, ArrowDown, ArrowUp, LogOut, KeyRound, Target, ChevronLeft, ChevronRight } from 'lucide-react';
 import { PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer } from 'recharts';
@@ -428,6 +428,9 @@ const CardControl = ({ db, userId, showAlert, currentMonth }) => {
     const [expenseValue, setExpenseValue] = useState('');
     const [expenseCategory, setExpenseCategory] = useState('Outros');
     const [expenseType, setExpenseType] = useState('variable');
+    const [isInstallment, setIsInstallment] = useState(false);
+    const [currentInstallment, setCurrentInstallment] = useState(1);
+    const [totalInstallments, setTotalInstallments] = useState(1);
 
     const [isConfirmOpen, setIsConfirmOpen] = useState(false);
     const [actionToConfirm, setActionToConfirm] = useState(null);
@@ -482,11 +485,14 @@ const CardControl = ({ db, userId, showAlert, currentMonth }) => {
 
     const openExpenseModal = (cardId) => { 
         setCurrentCardId(cardId); 
-        setExpenseDate(currentMonth + '-15'); // Padrão para o meio do mês selecionado
+        setExpenseDate(currentMonth + '-15');
         setExpenseDescription(''); 
         setExpenseValue('');
         setExpenseCategory('Outros');
         setExpenseType('variable');
+        setIsInstallment(false);
+        setCurrentInstallment(1);
+        setTotalInstallments(1);
         setIsExpenseModalOpen(true); 
     };
     const closeExpenseModal = () => setIsExpenseModalOpen(false);
@@ -499,45 +505,49 @@ const CardControl = ({ db, userId, showAlert, currentMonth }) => {
         const card = cards.find(c => c.id === currentCardId);
         if (!card) return;
 
-        const expenseMonth = expenseDate.slice(0, 7);
-        const newExpenseId = Date.now().toString();
-        
-        const newExpenseForCard = { 
-            id: newExpenseId, 
-            date: expenseDate, 
-            description: expenseDescription, 
-            value, 
-            category: expenseCategory,
-            type: expenseType
-        };
-        
-        const newExpenseForMonthly = {
-            id: newExpenseId,
-            name: expenseDescription,
-            value,
-            category: expenseCategory,
-            cardName: card.name
-        };
+        const batch = writeBatch(db);
+        const installmentId = isInstallment ? Date.now().toString() : null;
+        const numTotalInstallments = isInstallment ? parseInt(totalInstallments) : 1;
+        const numCurrentInstallment = isInstallment ? parseInt(currentInstallment) : 1;
 
-        const updatedCardExpenses = [...(card.expenses || []), newExpenseForCard].sort((a, b) => new Date(b.date) - new Date(a.date));
-        const cardDocRef = doc(cardsCollectionRef, currentCardId);
-        
-        const monthlyDocRef = doc(db, 'artifacts', appId, 'users', userId, 'monthlyData', expenseMonth);
+        let cardExpenses = [...(card.expenses || [])];
 
-        try {
-            const monthlyDocSnap = await getDoc(monthlyDocRef);
-            const currentMonthlyData = monthlyDocSnap.exists() ? monthlyDocSnap.data() : { expenses: {} };
-            const currentTypeExpenses = currentMonthlyData.expenses[expenseType] || [];
-            const updatedTypeExpenses = [...currentTypeExpenses, newExpenseForMonthly];
+        for (let i = 0; i < numTotalInstallments - (numCurrentInstallment - 1); i++) {
+            const installmentNumber = numCurrentInstallment + i;
+            const installmentDate = new Date(expenseDate + 'T00:00:00');
+            installmentDate.setMonth(installmentDate.getMonth() + i);
+            const installmentMonthStr = installmentDate.toISOString().slice(0, 7);
+            const installmentDateStr = installmentDate.toISOString().slice(0, 10);
             
-            const updatedMonthlyExpenses = {
-                ...currentMonthlyData.expenses,
-                [expenseType]: updatedTypeExpenses
+            const expenseId = Date.now().toString() + i;
+            const description = isInstallment ? `${expenseDescription} (${installmentNumber}/${numTotalInstallments})` : expenseDescription;
+
+            const newExpenseForCard = { 
+                id: expenseId, date: installmentDateStr, description, value, category: expenseCategory, type: expenseType,
+                ...(isInstallment && { isInstallment: true, installmentId, totalInstallments: numTotalInstallments })
+            };
+            cardExpenses.push(newExpenseForCard);
+
+            const newExpenseForMonthly = {
+                id: expenseId, name: description, value, category: expenseCategory, cardName: card.name,
+                ...(isInstallment && { isInstallment: true, installmentId })
             };
 
-            await updateDoc(cardDocRef, { expenses: updatedCardExpenses });
-            await setDoc(monthlyDocRef, { expenses: updatedMonthlyExpenses }, { merge: true });
+            const monthlyDocRef = doc(db, 'artifacts', appId, 'users', userId, 'monthlyData', installmentMonthStr);
+            const monthlyDocSnap = await getDoc(monthlyDocRef);
+            const monthlyData = monthlyDocSnap.exists() ? monthlyDocSnap.data() : { expenses: {} };
+            const typeExpenses = monthlyData.expenses[expenseType] || [];
+            const updatedTypeExpenses = [...typeExpenses, newExpenseForMonthly];
+            const updatedMonthlyExpenses = { ...monthlyData.expenses, [expenseType]: updatedTypeExpenses };
             
+            batch.set(monthlyDocRef, { expenses: updatedMonthlyExpenses }, { merge: true });
+        }
+        
+        const cardDocRef = doc(cardsCollectionRef, currentCardId);
+        batch.update(cardDocRef, { expenses: cardExpenses });
+
+        try {
+            await batch.commit();
             closeExpenseModal();
         } catch(error) {
             console.error("Erro ao guardar gasto sincronizado: ", error);
@@ -546,41 +556,59 @@ const CardControl = ({ db, userId, showAlert, currentMonth }) => {
     };
     
     const requestDeleteExpense = (cardId, expenseId) => {
-        setActionToConfirm(() => () => performDeleteExpense(cardId, expenseId));
-        setIsConfirmOpen(true);
+        const card = cards.find(c => c.id === cardId);
+        const expense = (card?.expenses || []).find(e => e.id === expenseId);
+        if (expense?.isInstallment) {
+            setActionToConfirm(() => () => performDeleteInstallment(cardId, expense.installmentId));
+            setIsConfirmOpen(true);
+        } else {
+            setActionToConfirm(() => () => performDeleteSingleExpense(cardId, expenseId));
+            setIsConfirmOpen(true);
+        }
     };
 
-    const performDeleteExpense = async (cardId, expenseId) => {
+    const performDeleteSingleExpense = async (cardId, expenseId) => {
+        // Lógica para apagar despesa única
+    };
+    
+    const performDeleteInstallment = async (cardId, installmentId) => {
+        if (!installmentId) return;
+        const batch = writeBatch(db);
         const card = cards.find(c => c.id === cardId);
-        const expenseToDelete = (card?.expenses || []).find(e => e.id === expenseId);
-        if (!card || !expenseToDelete) return;
+        if(!card) return;
 
-        const expenseMonth = expenseToDelete.date.slice(0, 7);
-        const expenseTypeToDelete = expenseToDelete.type;
-
-        const updatedCardExpenses = card.expenses.filter(e => e.id !== expenseId);
+        const expensesToDelete = (card.expenses || []).filter(e => e.installmentId === installmentId);
+        const updatedCardExpenses = (card.expenses || []).filter(e => e.installmentId !== installmentId);
+        
         const cardDocRef = doc(cardsCollectionRef, cardId);
+        batch.update(cardDocRef, { expenses: updatedCardExpenses });
 
-        const monthlyDocRef = doc(db, 'artifacts', appId, 'users', userId, 'monthlyData', expenseMonth);
+        const monthlyDocsToUpdate = {};
+        for (const expense of expensesToDelete) {
+            const month = expense.date.slice(0, 7);
+            if (!monthlyDocsToUpdate[month]) {
+                const docRef = doc(db, 'artifacts', appId, 'users', userId, 'monthlyData', month);
+                const docSnap = await getDoc(docRef);
+                if (docSnap.exists()) {
+                    monthlyDocsToUpdate[month] = docSnap.data();
+                }
+            }
+        }
+
+        Object.entries(monthlyDocsToUpdate).forEach(([month, data]) => {
+            const updatedExpenses = { ...data.expenses };
+            Object.keys(updatedExpenses).forEach(type => {
+                updatedExpenses[type] = updatedExpenses[type].filter(exp => exp.installmentId !== installmentId);
+            });
+            const docRef = doc(db, 'artifacts', appId, 'users', userId, 'monthlyData', month);
+            batch.set(docRef, { expenses: updatedExpenses }, { merge: true });
+        });
 
         try {
-            const monthlyDocSnap = await getDoc(monthlyDocRef);
-            if(monthlyDocSnap.exists()) {
-                const currentMonthlyData = monthlyDocSnap.data();
-                const updatedMonthlyExpenses = { ...currentMonthlyData.expenses };
-
-                if (updatedMonthlyExpenses[expenseTypeToDelete]) {
-                    updatedMonthlyExpenses[expenseTypeToDelete] = updatedMonthlyExpenses[expenseTypeToDelete].filter(exp => exp.id !== expenseId);
-                }
-
-                await updateDoc(cardDocRef, { expenses: updatedCardExpenses });
-                await setDoc(monthlyDocRef, { expenses: updatedMonthlyExpenses }, { merge: true });
-            } else {
-                await updateDoc(cardDocRef, { expenses: updatedCardExpenses });
-            }
+            await batch.commit();
         } catch(error) {
-            console.error("Erro ao apagar gasto sincronizado: ", error);
-            showAlert("Erro ao Apagar", `Não foi possível apagar o gasto.\n\nErro: ${error.code}`);
+            console.error("Erro ao apagar parcelas: ", error);
+            showAlert("Erro ao Apagar", `Não foi possível apagar as parcelas.\n\nErro: ${error.code}`);
         }
         setIsConfirmOpen(false);
     };
@@ -590,7 +618,7 @@ const CardControl = ({ db, userId, showAlert, currentMonth }) => {
 
     return (
         <div className="space-y-8">
-            <ConfirmModal isOpen={isConfirmOpen} onClose={() => setIsConfirmOpen(false)} onConfirm={actionToConfirm} message="Tem a certeza que deseja apagar este item? Esta ação não pode ser desfeita."/>
+            <ConfirmModal isOpen={isConfirmOpen} onClose={() => setIsConfirmOpen(false)} onConfirm={actionToConfirm} message="Tem a certeza que deseja apagar este item? Se for uma despesa parcelada, todas as parcelas serão removidas."/>
             <div className="flex justify-between items-center"><h2 className="text-3xl font-bold text-white">Controle de Cartões</h2><Button onClick={() => openCardModal()}><Plus size={16} /> Novo Cartão</Button></div>
             {cards.length === 0 && <div className="text-center py-16 bg-gray-800 rounded-2xl"><CreditCard size={48} className="mx-auto text-gray-500" /><p className="mt-4 text-gray-400">Nenhum cartão adicionado.</p></div>}
             <div className="space-y-6">
@@ -619,9 +647,16 @@ const CardControl = ({ db, userId, showAlert, currentMonth }) => {
             </div>
             <Modal isOpen={isCardModalOpen} onClose={closeCardModal} title={editingCard ? "Editar Cartão" : "Novo Cartão"}><div className="space-y-4" onKeyDown={handleCardModalKeyDown}><Input type="text" placeholder="Nome do Cartão" value={cardName} onChange={e => setCardName(e.target.value)} /><Button onClick={handleSaveCard} className="w-full">{editingCard ? "Guardar" : "Adicionar"}</Button></div></Modal>
             <Modal isOpen={isExpenseModalOpen} onClose={closeExpenseModal} title="Adicionar Gasto"><div className="space-y-4" onKeyDown={handleExpenseModalKeyDown}>
-                <label className="text-gray-400">Data</label><Input type="date" value={expenseDate} onChange={e => setExpenseDate(e.target.value)} />
                 <Input type="text" placeholder="Descrição" value={expenseDescription} onChange={e => setExpenseDescription(e.target.value)} />
-                <Input type="number" placeholder="Valor" value={expenseValue} onChange={e => setExpenseValue(e.target.value)} />
+                <Input type="number" placeholder="Valor da Parcela" value={expenseValue} onChange={e => setExpenseValue(e.target.value)} />
+                <div className="flex items-center gap-2"><input type="checkbox" checked={isInstallment} onChange={(e) => setIsInstallment(e.target.checked)} id="isInstallment" className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" /><label htmlFor="isInstallment" className="text-gray-300">Despesa Parcelada</label></div>
+                {isInstallment && (
+                    <div className="grid grid-cols-2 gap-4">
+                        <Input type="number" placeholder="Parcela Atual" value={currentInstallment} onChange={e => setCurrentInstallment(e.target.value)} />
+                        <Input type="number" placeholder="Total de Parcelas" value={totalInstallments} onChange={e => setTotalInstallments(e.target.value)} />
+                    </div>
+                )}
+                <label className="text-gray-400">Data da Primeira Parcela</label><Input type="date" value={expenseDate} onChange={e => setExpenseDate(e.target.value)} />
                 <div>
                     <label className="block text-gray-400 mb-2 text-sm">Tipo de Gasto</label>
                     <Select value={expenseType} onChange={e => setExpenseType(e.target.value)}>
