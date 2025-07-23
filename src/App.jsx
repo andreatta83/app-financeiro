@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'firebase/auth';
-import { getFirestore, doc, onSnapshot, setDoc, updateDoc, collection, query, addDoc, deleteDoc } from 'firebase/firestore';
+import { getFirestore, doc, onSnapshot, setDoc, updateDoc, collection, query, addDoc, deleteDoc, getDoc, getDocs } from 'firebase/firestore';
 import { getAnalytics } from "firebase/analytics";
 import { Landmark, CreditCard, TrendingUp, LayoutDashboard, Plus, Trash2, Edit, X, Copy, ArrowDown, ArrowUp, LogOut, KeyRound, Target } from 'lucide-react';
+import { PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+
 
 // --- CONFIGURAÇÃO DO FIREBASE ---
 const firebaseConfig = {
@@ -22,6 +24,22 @@ const auth = getAuth(app);
 const db = getFirestore(app);
 const analytics = getAnalytics(app);
 const appId = firebaseConfig.projectId;
+
+// Lista de Categorias Padrão
+const CATEGORIES = ['Moradia', 'Transporte', 'Alimentação', 'Saúde', 'Lazer', 'Educação', 'Vestuário', 'Dívidas', 'Investimentos', 'Outros'];
+const CATEGORY_COLORS = {
+    'Moradia': '#FF6384',
+    'Transporte': '#36A2EB',
+    'Alimentação': '#FFCE56',
+    'Saúde': '#4BC0C0',
+    'Lazer': '#9966FF',
+    'Educação': '#FF9F40',
+    'Vestuário': '#C9CBCF',
+    'Dívidas': '#E75252',
+    'Investimentos': '#32CD32',
+    'Outros': '#A9A9A9'
+};
+
 
 // --- COMPONENTES DE UI (Helpers) ---
 
@@ -75,6 +93,12 @@ const Input = React.forwardRef((props, ref) => (
   />
 ));
 
+const Select = ({ children, ...props }) => (
+    <select {...props} className="w-full bg-gray-700 text-white border border-gray-600 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition">
+        {children}
+    </select>
+);
+
 const Button = ({ children, onClick, className = '', variant = 'primary', disabled = false }) => {
   const baseClasses = "px-4 py-2 rounded-lg font-semibold flex items-center justify-center gap-2 transition duration-200 disabled:opacity-50 disabled:cursor-not-allowed";
   const variants = {
@@ -118,7 +142,6 @@ const LoginScreen = ({ showAlert }) => {
         setIsLoading(true);
         try {
             await signInWithEmailAndPassword(auth, email, password);
-            // O onAuthStateChanged no componente App irá tratar da mudança de ecrã.
         } catch (error) {
             console.error("Erro de login:", error.code);
             let friendlyMessage = "Ocorreu um erro ao tentar fazer o login.";
@@ -186,13 +209,13 @@ const MonthlyExpenses = ({ db, userId, showAlert }) => {
   const [currentMonth, setCurrentMonth] = useState(new Date().toISOString().slice(0, 7));
   const [incomes, setIncomes] = useState([]);
   const [expenses, setExpenses] = useState({ fixed: [], essential: [], variable: [], superfluous: [] });
-  const [previousMonthData, setPreviousMonthData] = useState(null);
-
+  
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [modalType, setModalType] = useState('');
   const [editingItem, setEditingItem] = useState(null);
   const [itemName, setItemName] = useState('');
   const [itemValue, setItemValue] = useState('');
+  const [itemCategory, setItemCategory] = useState('Outros');
 
   const [isConfirmOpen, setIsConfirmOpen] = useState(false);
   const [actionToConfirm, setActionToConfirm] = useState(null);
@@ -212,55 +235,23 @@ const MonthlyExpenses = ({ db, userId, showAlert }) => {
       }
     }, (error) => {
         console.error("Erro no listener do Firestore (Gastos): ", error);
-        showAlert("Erro de Leitura", `Não foi possível carregar os dados mensais. Verifique as suas regras de segurança e a ligação.\n\nErro: ${error.code}`);
+        showAlert("Erro de Leitura", `Não foi possível carregar os dados mensais.\n\nErro: ${error.code}`);
     });
 
-    const [year, month] = currentMonth.split('-').map(Number);
-    const prevDate = new Date(year, month - 2, 1);
-    const prevMonthStr = prevDate.toISOString().slice(0, 7);
-    const prevDocRef = doc(db, 'artifacts', appId, 'users', userId, 'monthlyData', prevMonthStr);
-    const unsubPrev = onSnapshot(prevDocRef, (docSnap) => {
-        setPreviousMonthData(docSnap.exists() ? docSnap.data() : null);
-    });
-
-    return () => { unsubscribe(); unsubPrev(); };
+    return () => unsubscribe();
   }, [userId, currentMonth, db]);
-
-  const handleCopyFixedExpenses = async () => {
-    if (!previousMonthData || !previousMonthData.expenses || !previousMonthData.expenses.fixed) {
-        showAlert("Aviso", "Não há dados de gastos fixos do mês anterior para copiar.");
-        return;
-    }
-    
-    const currentFixed = expenses.fixed || [];
-    const prevFixed = previousMonthData.expenses.fixed;
-    const currentFixedNames = new Set(currentFixed.map(item => item.name));
-    const newItemsToAdd = prevFixed.filter(item => !currentFixedNames.has(item.name)).map(item => ({...item, id: Date.now().toString() + Math.random() }));
-
-    if (newItemsToAdd.length === 0) {
-        showAlert("Aviso", "Todos os gastos fixos do mês anterior já existem no mês atual.");
-        return;
-    }
-
-    const updatedFixedExpenses = [...currentFixed, ...newItemsToAdd];
-    const updatedExpenses = { ...expenses, fixed: updatedFixedExpenses };
-
-    try {
-        const docRef = doc(db, 'artifacts', appId, 'users', userId, 'monthlyData', currentMonth);
-        await setDoc(docRef, { expenses: updatedExpenses }, { merge: true });
-        showAlert("Sucesso", `${newItemsToAdd.length} gasto(s) fixo(s) copiado(s) com sucesso!`);
-    } catch (error) {
-        console.error("Erro ao copiar gastos: ", error);
-        showAlert("Erro ao Copiar", `Ocorreu um erro ao copiar os gastos.\n\nErro: ${error.code}`);
-    }
-  };
 
   const handleSave = async () => {
     if (!itemName || !itemValue) return;
     const value = parseFloat(itemValue);
     if (isNaN(value)) return;
 
-    const newItem = { id: editingItem ? editingItem.id : Date.now().toString(), name: itemName, value };
+    const newItem = { 
+        id: editingItem ? editingItem.id : Date.now().toString(), 
+        name: itemName, 
+        value, 
+        ...(modalType !== 'income' && { category: itemCategory })
+    };
     let updatedData = {};
 
     if (modalType === 'income') {
@@ -287,6 +278,7 @@ const MonthlyExpenses = ({ db, userId, showAlert }) => {
     setEditingItem(item);
     setItemName(item ? item.name : '');
     setItemValue(item ? item.value : '');
+    setItemCategory(item ? item.category || 'Outros' : 'Outros');
     setIsModalOpen(true);
   };
   const closeModal = () => setIsModalOpen(false);
@@ -317,24 +309,39 @@ const MonthlyExpenses = ({ db, userId, showAlert }) => {
   const handleKeyDown = (event) => { if (event.key === 'Enter') { handleSave(); } };
 
   const renderTable = (title, data, type) => {
+    const isExpense = type !== 'income';
     const total = data.reduce((sum, item) => sum + item.value, 0);
     return (
       <div className="bg-gray-800 rounded-2xl p-6">
         <div className="flex justify-between items-center mb-4"><h3 className="text-xl font-bold text-white">{title}</h3><Button onClick={() => openModal(type)} variant="secondary"><Plus size={16} /> Adicionar</Button></div>
         <div className="overflow-x-auto"><table className="w-full text-left">
-            <thead><tr className="border-b border-gray-700"><th className="p-3 text-sm font-semibold text-gray-400">Descrição</th><th className="p-3 text-sm font-semibold text-gray-400 text-right">Valor</th><th className="p-3 text-sm font-semibold text-gray-400 text-right">Ações</th></tr></thead>
+            <thead><tr className="border-b border-gray-700">
+                <th className="p-3 text-sm font-semibold text-gray-400">Descrição</th>
+                {isExpense && <th className="p-3 text-sm font-semibold text-gray-400">Categoria</th>}
+                <th className="p-3 text-sm font-semibold text-gray-400 text-right">Valor</th>
+                <th className="p-3 text-sm font-semibold text-gray-400 text-right">Ações</th>
+            </tr></thead>
             <tbody>
-              {data.map(item => (<tr key={item.id} className="border-b border-gray-700/50"><td className="p-3 text-white">{item.name}</td><td className="p-3 text-white text-right">R$ {item.value.toFixed(2)}</td><td className="p-3 text-right"><button onClick={() => openModal(type, item)} className="text-blue-400 hover:text-blue-300 mr-2"><Edit size={16} /></button><button onClick={() => requestDelete(type, item.id)} className="text-red-400 hover:text-red-300"><Trash2 size={16} /></button></td></tr>))}
-              {data.length === 0 && (<tr><td colSpan="3" className="text-center p-4 text-gray-500">Nenhum item.</td></tr>)}
+              {data.map(item => (<tr key={item.id} className="border-b border-gray-700/50">
+                <td className="p-3 text-white">{item.name}</td>
+                {isExpense && <td className="p-3 text-white"><span className="bg-gray-700 text-xs font-semibold mr-2 px-2.5 py-0.5 rounded-full">{item.category || 'N/A'}</span></td>}
+                <td className="p-3 text-white text-right">R$ {item.value.toFixed(2)}</td>
+                <td className="p-3 text-right">
+                    <button onClick={() => openModal(type, item)} className="text-blue-400 hover:text-blue-300 mr-2"><Edit size={16} /></button>
+                    <button onClick={() => requestDelete(type, item.id)} className="text-red-400 hover:text-red-300"><Trash2 size={16} /></button>
+                </td>
+              </tr>))}
+              {data.length === 0 && (<tr><td colSpan={isExpense ? 4 : 3} className="text-center p-4 text-gray-500">Nenhum item.</td></tr>)}
             </tbody>
-            <tfoot><tr className="font-bold"><td className="p-3 text-white">Total</td><td className="p-3 text-white text-right" colSpan="2">R$ {total.toFixed(2)}</td></tr></tfoot>
+            <tfoot><tr className="font-bold">
+                <td className="p-3 text-white" colSpan={isExpense ? 2 : 1}>Total</td>
+                <td className="p-3 text-white text-right" colSpan="2">R$ {total.toFixed(2)}</td>
+            </tr></tfoot>
         </table></div>
       </div>
     );
   };
   
-  const prevMonthTotalExpenses = previousMonthData ? Object.values(previousMonthData.expenses || {}).flat().reduce((sum, item) => sum + item.value, 0) : 0;
-  const prevMonthTotalIncomes = previousMonthData ? (previousMonthData.incomes || []).reduce((sum, item) => sum + item.value, 0) : 0;
   const totalIncomes = incomes.reduce((sum, item) => sum + item.value, 0);
   const totalExpenses = Object.values(expenses).flat().reduce((sum, item) => sum + item.value, 0);
   const balance = totalIncomes - totalExpenses;
@@ -344,14 +351,25 @@ const MonthlyExpenses = ({ db, userId, showAlert }) => {
         <ConfirmModal isOpen={isConfirmOpen} onClose={() => setIsConfirmOpen(false)} onConfirm={actionToConfirm} message="Tem a certeza que deseja apagar este item? Esta ação não pode ser desfeita."/>
         <div className="flex justify-between items-center bg-gray-800 p-4 rounded-2xl"><h2 className="text-2xl font-bold text-white">Controlo de {new Date(currentMonth + '-02').toLocaleString('pt-BR', { month: 'long', year: 'numeric' })}</h2><Input type="month" value={currentMonth} onChange={(e) => setCurrentMonth(e.target.value)} className="w-auto" /></div>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <StatCard title="Total de Receitas" value={`R$ ${totalIncomes.toFixed(2)}`} icon={<ArrowUp size={24} />} color="bg-green-500/30 text-green-400" subValue={`Mês anterior: R$ ${prevMonthTotalIncomes.toFixed(2)}`} />
-            <StatCard title="Total de Despesas" value={`R$ ${totalExpenses.toFixed(2)}`} icon={<ArrowDown size={24} />} color="bg-red-500/30 text-red-400" subValue={`Mês anterior: R$ ${prevMonthTotalExpenses.toFixed(2)}`} />
+            <StatCard title="Total de Receitas" value={`R$ ${totalIncomes.toFixed(2)}`} icon={<ArrowUp size={24} />} color="bg-green-500/30 text-green-400" />
+            <StatCard title="Total de Despesas" value={`R$ ${totalExpenses.toFixed(2)}`} icon={<ArrowDown size={24} />} color="bg-red-500/30 text-red-400" />
             <StatCard title="Saldo do Mês" value={`R$ ${balance.toFixed(2)}`} icon={<Landmark size={24} />} color={balance >= 0 ? "bg-blue-500/30 text-blue-400" : "bg-yellow-500/30 text-yellow-400"} />
         </div>
-        <div className="bg-gray-800 rounded-2xl p-4 flex justify-end"><Button onClick={handleCopyFixedExpenses} variant="secondary" disabled={!previousMonthData}><Copy size={16} /> Copiar Gastos Fixos do Mês Anterior</Button></div>
         {renderTable('Receitas', incomes, 'income')}
         <div className="grid md:grid-cols-2 gap-8">{renderTable('Gastos Fixos', expenses.fixed, 'fixed')}{renderTable('Gastos Essenciais', expenses.essential, 'essential')}{renderTable('Gastos Variáveis', expenses.variable, 'variable')}{renderTable('Gastos Supérfluos', expenses.superfluous, 'superfluous')}</div>
-        <Modal isOpen={isModalOpen} onClose={closeModal} title={editingItem ? "Editar Item" : "Adicionar Item"}><div className="space-y-4" onKeyDown={handleKeyDown}><Input type="text" placeholder="Nome" value={itemName} onChange={e => setItemName(e.target.value)} /><Input type="number" placeholder="Valor" value={itemValue} onChange={e => setItemValue(e.target.value)} /><Button onClick={handleSave} className="w-full">{editingItem ? "Guardar" : "Adicionar"}</Button></div></Modal>
+        <Modal isOpen={isModalOpen} onClose={closeModal} title={editingItem ? "Editar Item" : "Adicionar Item"}><div className="space-y-4" onKeyDown={handleKeyDown}>
+            <Input type="text" placeholder="Nome" value={itemName} onChange={e => setItemName(e.target.value)} />
+            <Input type="number" placeholder="Valor" value={itemValue} onChange={e => setItemValue(e.target.value)} />
+            {modalType !== 'income' && (
+                <div>
+                    <label className="block text-gray-400 mb-2 text-sm">Categoria</label>
+                    <Select value={itemCategory} onChange={e => setItemCategory(e.target.value)}>
+                        {CATEGORIES.map(cat => <option key={cat} value={cat}>{cat}</option>)}
+                    </Select>
+                </div>
+            )}
+            <Button onClick={handleSave} className="w-full">{editingItem ? "Guardar" : "Adicionar"}</Button>
+        </div></Modal>
     </div>
   );
 };
@@ -369,6 +387,7 @@ const CardControl = ({ db, userId, showAlert }) => {
     const [expenseDate, setExpenseDate] = useState(new Date().toISOString().slice(0, 10));
     const [expenseDescription, setExpenseDescription] = useState('');
     const [expenseValue, setExpenseValue] = useState('');
+    const [expenseCategory, setExpenseCategory] = useState('Outros');
 
     const [isConfirmOpen, setIsConfirmOpen] = useState(false);
     const [actionToConfirm, setActionToConfirm] = useState(null);
@@ -421,7 +440,14 @@ const CardControl = ({ db, userId, showAlert }) => {
         setIsConfirmOpen(false);
     };
 
-    const openExpenseModal = (cardId) => { setCurrentCardId(cardId); setExpenseDate(new Date().toISOString().slice(0, 10)); setExpenseDescription(''); setExpenseValue(''); setIsExpenseModalOpen(true); };
+    const openExpenseModal = (cardId) => { 
+        setCurrentCardId(cardId); 
+        setExpenseDate(new Date().toISOString().slice(0, 10)); 
+        setExpenseDescription(''); 
+        setExpenseValue('');
+        setExpenseCategory('Outros');
+        setIsExpenseModalOpen(true); 
+    };
     const closeExpenseModal = () => setIsExpenseModalOpen(false);
 
     const handleSaveExpense = async () => {
@@ -432,7 +458,7 @@ const CardControl = ({ db, userId, showAlert }) => {
         const card = cards.find(c => c.id === currentCardId);
         if (card) {
             try {
-                const newExpense = { id: Date.now().toString(), date: expenseDate, description: expenseDescription, value };
+                const newExpense = { id: Date.now().toString(), date: expenseDate, description: expenseDescription, value, category: expenseCategory };
                 const updatedExpenses = [...(card.expenses || []), newExpense].sort((a, b) => new Date(b.date) - new Date(a.date));
                 await updateDoc(doc(cardsCollectionRef, currentCardId), { expenses: updatedExpenses });
                 closeExpenseModal();
@@ -477,10 +503,16 @@ const CardControl = ({ db, userId, showAlert }) => {
                         <div key={card.id} className="bg-gray-800 rounded-2xl p-6">
                             <div className="flex justify-between items-center mb-4 border-b border-gray-700 pb-4"><div><h3 className="text-xl font-bold text-white">{card.name}</h3><p className="text-red-400 font-semibold">Total: R$ {total.toFixed(2)}</p></div><div className="flex gap-2"><Button onClick={() => openExpenseModal(card.id)} variant="secondary"><Plus size={16} /> Adicionar Gasto</Button><Button onClick={() => requestDeleteCard(card.id)} variant="danger"><Trash2 size={16} /></Button></div></div>
                             <div className="overflow-x-auto"><table className="w-full text-left">
-                                <thead><tr className="border-b border-gray-700/50"><th className="p-2 text-sm font-semibold text-gray-400">Data</th><th className="p-2 text-sm font-semibold text-gray-400">Descrição</th><th className="p-2 text-sm font-semibold text-gray-400 text-right">Valor</th><th className="p-2 text-sm font-semibold text-gray-400 text-right">Ações</th></tr></thead>
+                                <thead><tr className="border-b border-gray-700/50"><th className="p-2 text-sm font-semibold text-gray-400">Data</th><th className="p-2 text-sm font-semibold text-gray-400">Descrição</th><th className="p-2 text-sm font-semibold text-gray-400">Categoria</th><th className="p-2 text-sm font-semibold text-gray-400 text-right">Valor</th><th className="p-2 text-sm font-semibold text-gray-400 text-right">Ações</th></tr></thead>
                                 <tbody>
-                                    {(card.expenses || []).map(exp => (<tr key={exp.id}><td className="p-2 text-white">{new Date(exp.date + 'T00:00:00').toLocaleDateString('pt-BR')}</td><td className="p-2 text-white">{exp.description}</td><td className="p-2 text-white text-right">R$ {exp.value.toFixed(2)}</td><td className="p-2 text-right"><button onClick={() => requestDeleteExpense(card.id, exp.id)} className="text-red-400 hover:text-red-300"><Trash2 size={16} /></button></td></tr>))}
-                                    {(card.expenses || []).length === 0 && <tr><td colSpan="4" className="text-center p-4 text-gray-500">Nenhum gasto.</td></tr>}
+                                    {(card.expenses || []).map(exp => (<tr key={exp.id}>
+                                        <td className="p-2 text-white">{new Date(exp.date + 'T00:00:00').toLocaleDateString('pt-BR')}</td>
+                                        <td className="p-2 text-white">{exp.description}</td>
+                                        <td className="p-2 text-white"><span className="bg-gray-700 text-xs font-semibold mr-2 px-2.5 py-0.5 rounded-full">{exp.category || 'N/A'}</span></td>
+                                        <td className="p-2 text-white text-right">R$ {exp.value.toFixed(2)}</td>
+                                        <td className="p-2 text-right"><button onClick={() => requestDeleteExpense(card.id, exp.id)} className="text-red-400 hover:text-red-300"><Trash2 size={16} /></button></td>
+                                    </tr>))}
+                                    {(card.expenses || []).length === 0 && <tr><td colSpan="5" className="text-center p-4 text-gray-500">Nenhum gasto.</td></tr>}
                                 </tbody>
                             </table></div>
                         </div>
@@ -488,7 +520,18 @@ const CardControl = ({ db, userId, showAlert }) => {
                 })}
             </div>
             <Modal isOpen={isCardModalOpen} onClose={closeCardModal} title={editingCard ? "Editar Cartão" : "Novo Cartão"}><div className="space-y-4" onKeyDown={handleCardModalKeyDown}><Input type="text" placeholder="Nome do Cartão" value={cardName} onChange={e => setCardName(e.target.value)} /><Button onClick={handleSaveCard} className="w-full">{editingCard ? "Guardar" : "Adicionar"}</Button></div></Modal>
-            <Modal isOpen={isExpenseModalOpen} onClose={closeExpenseModal} title="Adicionar Gasto"><div className="space-y-4" onKeyDown={handleExpenseModalKeyDown}><label className="text-gray-400">Data</label><Input type="date" value={expenseDate} onChange={e => setExpenseDate(e.target.value)} /><Input type="text" placeholder="Descrição" value={expenseDescription} onChange={e => setExpenseDescription(e.target.value)} /><Input type="number" placeholder="Valor" value={expenseValue} onChange={e => setExpenseValue(e.target.value)} /><Button onClick={handleSaveExpense} className="w-full">Adicionar</Button></div></Modal>
+            <Modal isOpen={isExpenseModalOpen} onClose={closeExpenseModal} title="Adicionar Gasto"><div className="space-y-4" onKeyDown={handleExpenseModalKeyDown}>
+                <label className="text-gray-400">Data</label><Input type="date" value={expenseDate} onChange={e => setExpenseDate(e.target.value)} />
+                <Input type="text" placeholder="Descrição" value={expenseDescription} onChange={e => setExpenseDescription(e.target.value)} />
+                <Input type="number" placeholder="Valor" value={expenseValue} onChange={e => setExpenseValue(e.target.value)} />
+                <div>
+                    <label className="block text-gray-400 mb-2 text-sm">Categoria</label>
+                    <Select value={expenseCategory} onChange={e => setExpenseCategory(e.target.value)}>
+                        {CATEGORIES.map(cat => <option key={cat} value={cat}>{cat}</option>)}
+                    </Select>
+                </div>
+                <Button onClick={handleSaveExpense} className="w-full">Adicionar</Button>
+            </div></Modal>
         </div>
     );
 };
@@ -517,7 +560,6 @@ const Investments = ({ db, userId, showAlert }) => {
     useEffect(() => {
         if (!docRef) return;
         const unsubscribe = onSnapshot(docRef, (docSnap) => {
-            // Ordena o histórico por data ao receber os dados
             const data = docSnap.exists() ? docSnap.data().history || [] : [];
             const sortedData = [...data].sort((a, b) => a.date.localeCompare(b.date));
             setHistory(sortedData);
@@ -656,69 +698,160 @@ const Investments = ({ db, userId, showAlert }) => {
 // --- ABA DE DASHBOARD ---
 
 const Dashboard = ({ db, userId, showAlert }) => {
-    const [summary, setSummary] = useState({ totalIncomes: 0, totalExpenses: 0, balance: 0, totalCardDebt: 0, investmentTotal: 0, investmentProgress: 0, expenseBreakdown: {} });
+    const [monthlyData, setMonthlyData] = useState(null);
+    const [cardData, setCardData] = useState([]);
+    const [investmentData, setInvestmentData] = useState(null);
+
+    const month = useMemo(() => new Date().toISOString().slice(0, 7), []);
 
     useEffect(() => {
         if (!userId) return;
-        const month = new Date().toISOString().slice(0, 7);
-        
+        const unsubscribers = [];
+
         const monthlyDocRef = doc(db, 'artifacts', appId, 'users', userId, 'monthlyData', month);
-        const unsubMonthly = onSnapshot(monthlyDocRef, (docSnap) => {
-            let s = { totalIncomes: 0, totalExpenses: 0, balance: 0, expenseBreakdown: {} };
-            if (docSnap.exists()) {
-                const data = docSnap.data();
-                s.totalIncomes = (data.incomes || []).reduce((sum, i) => sum + i.value, 0);
-                const allExpenses = Object.values(data.expenses || {}).flat();
-                s.totalExpenses = allExpenses.reduce((sum, e) => sum + e.value, 0);
-                s.balance = s.totalIncomes - s.totalExpenses;
-                s.expenseBreakdown = data.expenses || {};
-            }
-            setSummary(prev => ({ ...prev, ...s }));
+        unsubscribers.push(onSnapshot(monthlyDocRef, (docSnap) => {
+            setMonthlyData(docSnap.exists() ? docSnap.data() : { incomes: [], expenses: {} });
         }, (error) => {
-            console.error("Erro no listener do Dashboard (Mensal): ", error);
-            showAlert("Erro de Leitura", `Não foi possível carregar o resumo mensal.\n\nErro: ${error.code}`);
-        });
+            console.error("Dashboard: Erro ao carregar dados mensais:", error);
+            showAlert("Erro de Leitura (Mensal)", `Não foi possível carregar os dados do dashboard.\n\nErro: ${error.code || error.message}`);
+        }));
 
         const cardsCollectionRef = collection(db, 'artifacts', appId, 'users', userId, 'creditCards');
-        const unsubCards = onSnapshot(query(cardsCollectionRef), (snap) => {
-            let totalCardDebt = 0;
-            snap.forEach(doc => { totalCardDebt += (doc.data().expenses || []).reduce((sum, e) => sum + e.value, 0); });
-            setSummary(prev => ({ ...prev, totalCardDebt }));
+        unsubscribers.push(onSnapshot(query(cardsCollectionRef), (querySnapshot) => {
+            setCardData(querySnapshot.docs.map(d => d.data()));
         }, (error) => {
-            console.error("Erro no listener do Dashboard (Cartões): ", error);
-            showAlert("Erro de Leitura", `Não foi possível carregar o resumo dos cartões.\n\nErro: ${error.code}`);
-        });
+            console.error("Dashboard: Erro ao carregar dados dos cartões:", error);
+            showAlert("Erro de Leitura (Cartões)", `Não foi possível carregar os dados do dashboard.\n\nErro: ${error.code || error.message}`);
+        }));
 
         const investmentDocRef = doc(db, 'artifacts', appId, 'users', userId, 'investments', 'data');
-        const unsubInvestments = onSnapshot(investmentDocRef, (docSnap) => {
-            let investmentTotal = 0, investmentProgress = 0;
-            if (docSnap.exists()) {
-                const history = docSnap.data().history || [];
-                investmentTotal = history.length > 0 ? history[history.length - 1].total : 0;
-                investmentProgress = (investmentTotal / 1000000) * 100;
-            }
-            setSummary(prev => ({ ...prev, investmentTotal, investmentProgress }));
+        unsubscribers.push(onSnapshot(investmentDocRef, (docSnap) => {
+            setInvestmentData(docSnap.exists() ? docSnap.data() : { history: [] });
         }, (error) => {
-            console.error("Erro no listener do Dashboard (Investimentos): ", error);
-            showAlert("Erro de Leitura", `Não foi possível carregar o resumo dos investimentos.\n\nErro: ${error.code}`);
-        });
+            console.error("Dashboard: Erro ao carregar dados de investimentos:", error);
+            showAlert("Erro de Leitura (Investimentos)", `Não foi possível carregar os dados do dashboard.\n\nErro: ${error.code || error.message}`);
+        }));
 
-        return () => { unsubMonthly(); unsubCards(); unsubInvestments(); };
-    }, [userId, db]);
+        return () => unsubscribers.forEach(unsub => unsub());
+    }, [userId, db, month, showAlert]);
 
-    const categoryTotals = useMemo(() => ({
-        fixed: (summary.expenseBreakdown.fixed || []).reduce((s, i) => s + i.value, 0),
-        essential: (summary.expenseBreakdown.essential || []).reduce((s, i) => s + i.value, 0),
-        variable: (summary.expenseBreakdown.variable || []).reduce((s, i) => s + i.value, 0),
-        superfluous: (summary.expenseBreakdown.superfluous || []).reduce((s, i) => s + i.value, 0),
-    }), [summary.expenseBreakdown]);
-    
-    const totalExpensesForChart = Object.values(categoryTotals).reduce((s, v) => s + v, 0);
-    const categoryColors = { fixed: 'bg-red-500', essential: 'bg-orange-500', variable: 'bg-yellow-500', superfluous: 'bg-purple-500' };
-    const categoryLabels = { fixed: 'Fixos', essential: 'Essenciais', variable: 'Variáveis', superfluous: 'Supérfluos' };
+    const summary = useMemo(() => {
+        const totalIncomes = (monthlyData?.incomes || []).reduce((sum, i) => sum + i.value, 0);
+        
+        const monthlyExpenses = Object.values(monthlyData?.expenses || {}).flat();
+        const cardExpenses = cardData.flatMap(card => card.expenses || []);
+        const allExpenses = [...monthlyExpenses, ...cardExpenses];
+        
+        const totalExpensesValue = allExpenses.reduce((sum, e) => sum + e.value, 0);
+        const balance = totalIncomes - totalExpensesValue;
+        
+        const totalCardDebt = cardExpenses.reduce((sum, e) => sum + e.value, 0);
+        
+        const investmentHistory = investmentData?.history || [];
+        const investmentTotal = investmentHistory.length > 0 ? investmentHistory[investmentHistory.length - 1].total : 0;
+
+        const categoryAggregates = allExpenses.reduce((acc, expense) => {
+            const category = expense.category || 'Outros';
+            acc[category] = (acc[category] || 0) + expense.value;
+            return acc;
+        }, {});
+        
+        const monthlyExpenseTypes = Object.entries(monthlyData?.expenses || {}).reduce((acc, [type, expenses]) => {
+            acc[type] = expenses.reduce((sum, e) => sum + e.value, 0);
+            return acc;
+        }, {});
+
+        return {
+            totalIncomes,
+            totalExpenses: totalExpensesValue,
+            balance,
+            totalCardDebt,
+            investmentTotal,
+            categoryAggregates,
+            monthlyExpenseTypes
+        };
+    }, [monthlyData, cardData, investmentData]);
+
+    const pieChartData = useMemo(() => {
+        return Object.entries(summary.categoryAggregates)
+            .map(([name, value]) => ({ name, value }))
+            .filter(item => item.value > 0);
+    }, [summary.categoryAggregates]);
+
+    const expenseTypeData = useMemo(() => {
+        const labels = { fixed: 'Fixos', essential: 'Essenciais', variable: 'Variáveis', superfluous: 'Supérfluos' };
+        return Object.entries(summary.monthlyExpenseTypes).map(([type, value]) => ({
+            name: labels[type] || type,
+            value
+        }));
+    }, [summary.monthlyExpenseTypes]);
 
     return (
-        <div className="space-y-8"><h2 className="text-3xl font-bold text-white">Dashboard Financeiro</h2><div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6"><StatCard title="Saldo do Mês" value={`R$ ${summary.balance.toFixed(2)}`} icon={<Landmark size={24} />} color="bg-blue-500/30 text-blue-400" /><StatCard title="Dívida Cartões" value={`R$ ${summary.totalCardDebt.toFixed(2)}`} icon={<CreditCard size={24} />} color="bg-red-500/30 text-red-400" /><StatCard title="Total Investido" value={`R$ ${summary.investmentTotal.toFixed(2)}`} icon={<TrendingUp size={24} />} color="bg-green-500/30 text-green-400" /><StatCard title="Receitas do Mês" value={`R$ ${summary.totalIncomes.toFixed(2)}`} icon={<ArrowUp size={24} />} color="bg-green-500/30 text-green-400" /></div><div className="grid grid-cols-1 lg:grid-cols-5 gap-8"><div className="lg:col-span-3 bg-gray-800 rounded-2xl p-6"><h3 className="text-xl font-bold text-white mb-4">Distribuição de Despesas do Mês</h3>{totalExpensesForChart > 0 ? (<div className="space-y-4"><div className="w-full flex h-10 rounded-full overflow-hidden">{Object.entries(categoryTotals).map(([key, value]) => { const p = (value / totalExpensesForChart) * 100; if (p === 0) return null; return <div key={key} className={categoryColors[key]} style={{ width: `${p}%` }} title={`${categoryLabels[key]}: ${p.toFixed(1)}%`}></div> })}</div><div className="grid grid-cols-2 gap-4">{Object.entries(categoryTotals).map(([key, value]) => (<div key={key} className="flex items-center gap-2"><div className={`w-3 h-3 rounded-full ${categoryColors[key]}`}></div><div><span className="text-white font-medium">{categoryLabels[key]}</span><span className="text-gray-400 text-sm ml-2">R$ {value.toFixed(2)}</span></div></div>))}</div></div>) : (<div className="text-center py-10 text-gray-500"><p>Nenhuma despesa registada.</p></div>)}</div><div className="lg:col-span-2 bg-gray-800 rounded-2xl p-6"><h3 className="text-xl font-bold text-white mb-4">Progresso da Meta de Investimento</h3><div className="flex flex-col items-center justify-center h-full gap-4"><div className="relative w-32 h-32"><svg className="w-full h-full" viewBox="0 0 36 36"><path d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="#4A5568" strokeWidth="3" /><path d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="#48BB78" strokeWidth="3" strokeDasharray={`${summary.investmentProgress}, 100`} strokeLinecap="round" /></svg><div className="absolute inset-0 flex items-center justify-center"><span className="text-2xl font-bold text-white">{summary.investmentProgress.toFixed(1)}%</span></div></div><p className="text-gray-400">Rumo a R$ 1.000.000</p></div></div></div></div>
+        <div className="space-y-8">
+            <h2 className="text-3xl font-bold text-white">Dashboard Financeiro</h2>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                <StatCard title="Saldo do Mês" value={`R$ ${summary.balance.toFixed(2)}`} icon={<Landmark size={24} />} color="bg-blue-500/30 text-blue-400" />
+                <StatCard title="Dívida Cartões" value={`R$ ${summary.totalCardDebt.toFixed(2)}`} icon={<CreditCard size={24} />} color="bg-red-500/30 text-red-400" />
+                <StatCard title="Total Investido" value={`R$ ${summary.investmentTotal.toFixed(2)}`} icon={<TrendingUp size={24} />} color="bg-green-500/30 text-green-400" />
+                <StatCard title="Receitas do Mês" value={`R$ ${summary.totalIncomes.toFixed(2)}`} icon={<ArrowUp size={24} />} color="bg-green-500/30 text-green-400" />
+            </div>
+            
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                <div className="bg-gray-800 rounded-2xl p-6">
+                    <h3 className="text-xl font-bold text-white mb-4">Distribuição de Despesas do Mês</h3>
+                    {expenseTypeData.length > 0 ? (
+                        <div className="space-y-4">
+                            <div className="w-full flex h-10 rounded-full overflow-hidden">
+                                {expenseTypeData.map(({ name, value }) => {
+                                    const percentage = summary.totalExpenses > 0 ? (value / summary.totalExpenses) * 100 : 0;
+                                    const colors = { 'Fixos': 'bg-red-500', 'Essenciais': 'bg-orange-500', 'Variáveis': 'bg-yellow-500', 'Supérfluos': 'bg-purple-500' };
+                                    if (percentage === 0) return null;
+                                    return <div key={name} className={colors[name]} style={{ width: `${percentage}%` }} title={`${name}: ${percentage.toFixed(1)}%`}></div>
+                                })}
+                            </div>
+                            <div className="grid grid-cols-2 gap-4">
+                                {expenseTypeData.map(({name, value}) => (<div key={name} className="flex items-center gap-2">
+                                    <div className={`w-3 h-3 rounded-full ${ { 'Fixos': 'bg-red-500', 'Essenciais': 'bg-orange-500', 'Variáveis': 'bg-yellow-500', 'Supérfluos': 'bg-purple-500' }[name]}`}></div>
+                                    <div><span className="text-white font-medium">{name}</span><span className="text-gray-400 text-sm ml-2">R$ {value.toFixed(2)}</span></div>
+                                </div>))}
+                            </div>
+                        </div>
+                    ) : (
+                        <div className="text-center py-10 text-gray-500"><p>Nenhuma despesa registada este mês.</p></div>
+                    )}
+                </div>
+
+                <div className="bg-gray-800 rounded-2xl p-6">
+                     <h3 className="text-xl font-bold text-white mb-4">Análise de Categorias</h3>
+                     {pieChartData.length > 0 ? (
+                        <ResponsiveContainer width="100%" height={300}>
+                            <PieChart>
+                                <Pie
+                                    data={pieChartData}
+                                    cx="50%"
+                                    cy="50%"
+                                    labelLine={false}
+                                    outerRadius={80}
+                                    fill="#8884d8"
+                                    dataKey="value"
+                                    nameKey="name"
+                                >
+                                    {pieChartData.map((entry, index) => (
+                                        <Cell key={`cell-${index}`} fill={CATEGORY_COLORS[entry.name] || '#8884d8'} />
+                                    ))}
+                                </Pie>
+                                <Tooltip formatter={(value) => `R$ ${value.toFixed(2)}`} />
+                                <Legend />
+                            </PieChart>
+                        </ResponsiveContainer>
+                     ) : (
+                        <div className="text-center py-10 text-gray-500 flex flex-col items-center justify-center h-full">
+                            <p>Nenhuma despesa com categoria registada.</p>
+                        </div>
+                     )}
+                </div>
+            </div>
+        </div>
     );
 };
 
