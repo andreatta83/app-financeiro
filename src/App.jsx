@@ -848,22 +848,19 @@ const Dashboard = ({ db, userId, showAlert, currentMonth }) => {
         const unsubscribers = [];
         
         const fetchData = async () => {
-            // Reset states to indicate loading
             setMonthlyData(null);
             setCardData(null);
             setInvestmentData(null);
 
-            // Monthly Data
             const monthlyDocRef = doc(db, 'artifacts', appId, 'users', userId, 'monthlyData', currentMonth);
             unsubscribers.push(onSnapshot(monthlyDocRef, (docSnap) => {
                 setMonthlyData(docSnap.exists() ? docSnap.data() : { incomes: [], expenses: {} });
             }, (error) => {
                 console.error("Dashboard: Erro ao carregar dados mensais:", error);
                 showAlert("Erro de Leitura (Mensal)", `Não foi possível carregar os dados do dashboard.\n\nErro: ${error.code || error.message}`);
-                setMonthlyData({ incomes: [], expenses: {} }); // Set to empty to stop loading
+                setMonthlyData({ incomes: [], expenses: {} });
             }));
 
-            // Card Data
             const cardsCollectionRef = collection(db, 'artifacts', appId, 'users', userId, 'creditCards');
             unsubscribers.push(onSnapshot(query(cardsCollectionRef), (querySnapshot) => {
                 setCardData(querySnapshot.docs.map(d => d.data()));
@@ -873,7 +870,6 @@ const Dashboard = ({ db, userId, showAlert, currentMonth }) => {
                 setCardData([]);
             }));
 
-            // Investment Data
             const investmentDocRef = doc(db, 'artifacts', appId, 'users', userId, 'investments', 'data');
             unsubscribers.push(onSnapshot(investmentDocRef, (docSnap) => {
                 setInvestmentData(docSnap.exists() ? docSnap.data() : { history: [] });
@@ -1024,11 +1020,16 @@ const ConfrariaACDC = ({ db, userId, showAlert }) => {
     const [isParticipantModalOpen, setIsParticipantModalOpen] = useState(false);
     const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false);
     const [participantName, setParticipantName] = useState('');
+    const [editingParticipant, setEditingParticipant] = useState(null);
     
     const [expenseDescription, setExpenseDescription] = useState('');
     const [expenseAmount, setExpenseAmount] = useState('');
     const [paidById, setPaidById] = useState('');
     const [involvedParticipants, setInvolvedParticipants] = useState({});
+    const [editingExpense, setEditingExpense] = useState(null);
+
+    const [isConfirmOpen, setIsConfirmOpen] = useState(false);
+    const [actionToConfirm, setActionToConfirm] = useState(null);
 
     const docRef = useMemo(() => {
         if (!userId) return null;
@@ -1046,17 +1047,67 @@ const ConfrariaACDC = ({ db, userId, showAlert }) => {
         return () => unsubscribe();
     }, [docRef]);
 
+    const openParticipantModal = (participant = null) => {
+        setEditingParticipant(participant);
+        setParticipantName(participant ? participant.name : '');
+        setIsParticipantModalOpen(true);
+    };
+
     const handleSaveParticipant = async () => {
         if (!participantName.trim()) return;
-        const newParticipant = { id: Date.now().toString(), name: participantName.trim() };
-        const updatedParticipants = [...eventData.participants, newParticipant];
+        
+        let updatedParticipants;
+        if (editingParticipant) {
+            updatedParticipants = eventData.participants.map(p => 
+                p.id === editingParticipant.id ? { ...p, name: participantName.trim() } : p
+            );
+        } else {
+            const newParticipant = { id: Date.now().toString(), name: participantName.trim() };
+            updatedParticipants = [...eventData.participants, newParticipant];
+        }
+
         try {
             await setDoc(docRef, { ...eventData, participants: updatedParticipants }, { merge: true });
             setIsParticipantModalOpen(false);
             setParticipantName('');
+            setEditingParticipant(null);
         } catch (error) {
-            showAlert("Erro", "Não foi possível adicionar o participante.");
+            showAlert("Erro", "Não foi possível guardar o participante.");
         }
+    };
+
+    const requestDeleteParticipant = (participantId) => {
+        const isParticipantInvolved = eventData.expenses.some(e => e.paidById === participantId || e.participantsIds.includes(participantId));
+        if (isParticipantInvolved) {
+            showAlert("Ação Bloqueada", "Não é possível excluir um participante que está envolvido em despesas. Remova-o das despesas primeiro.");
+            return;
+        }
+        setActionToConfirm(() => () => performDeleteParticipant(participantId));
+        setIsConfirmOpen(true);
+    };
+
+    const performDeleteParticipant = async (participantId) => {
+        const updatedParticipants = eventData.participants.filter(p => p.id !== participantId);
+        try {
+            await setDoc(docRef, { ...eventData, participants: updatedParticipants }, { merge: true });
+            setIsConfirmOpen(false);
+        } catch (error) {
+             showAlert("Erro", "Não foi possível excluir o participante.");
+        }
+    };
+    
+    const openExpenseModal = (expense = null) => {
+        setEditingExpense(expense);
+        setExpenseDescription(expense ? expense.description : '');
+        setExpenseAmount(expense ? expense.amount : '');
+        setPaidById(expense ? expense.paidById : eventData.participants[0]?.id || '');
+        
+        const involved = expense 
+            ? expense.participantsIds.reduce((acc, id) => ({ ...acc, [id]: true }), {})
+            : eventData.participants.reduce((acc, p) => ({ ...acc, [p.id]: true }), {});
+        setInvolvedParticipants(involved);
+        
+        setIsExpenseModalOpen(true);
     };
     
     const handleSaveExpense = async () => {
@@ -1071,23 +1122,49 @@ const ConfrariaACDC = ({ db, userId, showAlert }) => {
 
         const paidByName = eventData.participants.find(p => p.id === paidById)?.name || '';
 
-        const newExpense = {
-            id: Date.now().toString(),
-            description: expenseDescription.trim(),
-            amount,
-            paidById,
-            paidByName,
-            participantsIds: involvedIds
-        };
-        const updatedExpenses = [...eventData.expenses, newExpense];
+        let updatedExpenses;
+        if (editingExpense) {
+            updatedExpenses = eventData.expenses.map(e => e.id === editingExpense.id ? {
+                ...e,
+                description: expenseDescription.trim(),
+                amount,
+                paidById,
+                paidByName,
+                participantsIds: involvedIds
+            } : e);
+        } else {
+            const newExpense = {
+                id: Date.now().toString(),
+                description: expenseDescription.trim(),
+                amount,
+                paidById,
+                paidByName,
+                participantsIds: involvedIds
+            };
+            updatedExpenses = [...eventData.expenses, newExpense];
+        }
+
         try {
             await setDoc(docRef, { ...eventData, expenses: updatedExpenses }, { merge: true });
             setIsExpenseModalOpen(false);
-            setExpenseDescription('');
-            setExpenseAmount('');
-            setPaidById('');
+            setEditingExpense(null);
         } catch(error) {
-            showAlert("Erro", "Não foi possível adicionar a despesa.");
+            showAlert("Erro", "Não foi possível guardar a despesa.");
+        }
+    };
+
+    const requestDeleteExpense = (expenseId) => {
+        setActionToConfirm(() => () => performDeleteExpense(expenseId));
+        setIsConfirmOpen(true);
+    };
+
+    const performDeleteExpense = async (expenseId) => {
+        const updatedExpenses = eventData.expenses.filter(e => e.id !== expenseId);
+        try {
+            await setDoc(docRef, { ...eventData, expenses: updatedExpenses }, { merge: true });
+            setIsConfirmOpen(false);
+        } catch(error) {
+            showAlert("Erro", "Não foi possível excluir a despesa.");
         }
     };
 
@@ -1101,12 +1178,14 @@ const ConfrariaACDC = ({ db, userId, showAlert }) => {
             if (balances[expense.paidById]) {
                 balances[expense.paidById].paid += expense.amount;
             }
-            const share = expense.amount / expense.participantsIds.length;
-            expense.participantsIds.forEach(pId => {
-                if(balances[pId]) {
-                    balances[pId].owed += share;
-                }
-            });
+            if (expense.participantsIds.length > 0) {
+                const share = expense.amount / expense.participantsIds.length;
+                expense.participantsIds.forEach(pId => {
+                    if(balances[pId]) {
+                        balances[pId].owed += share;
+                    }
+                });
+            }
         });
 
         Object.values(balances).forEach(b => {
@@ -1148,6 +1227,7 @@ const ConfrariaACDC = ({ db, userId, showAlert }) => {
 
     return (
         <div className="space-y-8">
+             <ConfirmModal isOpen={isConfirmOpen} onClose={() => setIsConfirmOpen(false)} onConfirm={actionToConfirm} message="Tem a certeza que deseja excluir este item?"/>
             <h2 className="text-3xl font-bold text-white">Divisão de Contas - Confra ACDC</h2>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                  <StatCard title="Total Gasto" value={`R$ ${totalSpent.toFixed(2)}`} icon={<UtensilsCrossed size={24} />} color="bg-orange-500/30 text-orange-400" />
@@ -1157,15 +1237,8 @@ const ConfrariaACDC = ({ db, userId, showAlert }) => {
 
             {/* Ações */}
             <div className="flex gap-4">
-                <Button onClick={() => { setParticipantName(''); setIsParticipantModalOpen(true); }} className="flex-1"><Users size={16} /> Adicionar Participante</Button>
-                <Button onClick={() => {
-                     setExpenseDescription('');
-                     setExpenseAmount('');
-                     setPaidById(eventData.participants[0]?.id || '');
-                     const allInvolved = eventData.participants.reduce((acc, p) => ({ ...acc, [p.id]: true }), {});
-                     setInvolvedParticipants(allInvolved);
-                     setIsExpenseModalOpen(true);
-                }} className="flex-1" variant="secondary" disabled={eventData.participants.length === 0}>
+                <Button onClick={() => openParticipantModal()} className="flex-1"><Users size={16} /> Adicionar Participante</Button>
+                <Button onClick={() => openExpenseModal()} className="flex-1" variant="secondary" disabled={eventData.participants.length === 0}>
                     <Plus size={16} /> Adicionar Despesa
                 </Button>
             </div>
@@ -1192,16 +1265,16 @@ const ConfrariaACDC = ({ db, userId, showAlert }) => {
             </div>
 
             {/* Detalhes (Saldos, Despesas, Participantes) */}
-             <div className="grid lg:grid-cols-2 gap-8">
+             <div className="grid lg:grid-cols-3 gap-8">
                 {/* Saldos Individuais */}
-                <div className="bg-gray-800 rounded-2xl p-6">
+                <div className="bg-gray-800 rounded-2xl p-6 lg:col-span-1">
                     <h3 className="text-xl font-bold text-white mb-4">Saldos</h3>
                     <ul className="space-y-2">
                         {Object.values(balances).map(b => (
                             <li key={b.name} className="flex justify-between items-center text-white p-2 rounded bg-gray-700/50">
                                 <span>{b.name}</span>
                                 <div className="text-right">
-                                    <span className={`font-bold text-lg ${b.balance > 0 ? 'text-green-400' : b.balance < 0 ? 'text-red-400' : 'text-gray-300'}`}>
+                                    <span className={`font-bold text-lg ${b.balance >= 0.01 ? 'text-green-400' : b.balance <= -0.01 ? 'text-red-400' : 'text-gray-300'}`}>
                                         {b.balance >= 0 ? '+' : '-'} R$ {Math.abs(b.balance).toFixed(2)}
                                     </span>
                                     <div className="text-xs text-gray-400">Pagou R$ {b.paid.toFixed(2)} / Devia R$ {b.owed.toFixed(2)}</div>
@@ -1210,31 +1283,51 @@ const ConfrariaACDC = ({ db, userId, showAlert }) => {
                         ))}
                     </ul>
                 </div>
-                 {/* Lista de Despesas */}
-                <div className="bg-gray-800 rounded-2xl p-6">
-                    <h3 className="text-xl font-bold text-white mb-4">Despesas</h3>
-                    <ul className="space-y-2">
-                        {eventData.expenses.map(e => (
-                             <li key={e.id} className="flex justify-between items-center text-white p-2 rounded bg-gray-700/50">
-                                 <div>
-                                    <span>{e.description}</span>
-                                    <p className="text-xs text-gray-400">Pago por: {e.paidByName}</p>
-                                 </div>
-                                 <span className="font-bold">R$ {e.amount.toFixed(2)}</span>
-                             </li>
-                        ))}
-                    </ul>
+                 {/* Lista de Despesas e Participantes */}
+                <div className="bg-gray-800 rounded-2xl p-6 lg:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-8">
+                    <div>
+                        <h3 className="text-xl font-bold text-white mb-4">Despesas</h3>
+                        <ul className="space-y-2">
+                            {eventData.expenses.map(e => (
+                                <li key={e.id} className="flex justify-between items-center text-white p-2 rounded bg-gray-700/50">
+                                    <div>
+                                        <span>{e.description}</span>
+                                        <p className="text-xs text-gray-400">Pago por: {e.paidByName}</p>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                        <span className="font-bold">R$ {e.amount.toFixed(2)}</span>
+                                        <button onClick={() => openExpenseModal(e)} className="text-blue-400 hover:text-blue-300"><Edit size={16} /></button>
+                                        <button onClick={() => requestDeleteExpense(e.id)} className="text-red-400 hover:text-red-300"><Trash2 size={16} /></button>
+                                    </div>
+                                </li>
+                            ))}
+                        </ul>
+                    </div>
+                     <div>
+                        <h3 className="text-xl font-bold text-white mb-4">Participantes</h3>
+                        <ul className="space-y-2">
+                            {eventData.participants.map(p => (
+                                <li key={p.id} className="flex justify-between items-center text-white p-2 rounded bg-gray-700/50">
+                                    <span>{p.name}</span>
+                                    <div className="flex items-center gap-2">
+                                        <button onClick={() => openParticipantModal(p)} className="text-blue-400 hover:text-blue-300"><Edit size={16} /></button>
+                                        <button onClick={() => requestDeleteParticipant(p.id)} className="text-red-400 hover:text-red-300"><Trash2 size={16} /></button>
+                                    </div>
+                                </li>
+                            ))}
+                        </ul>
+                    </div>
                 </div>
             </div>
 
             {/* Modals */}
-            <Modal isOpen={isParticipantModalOpen} onClose={() => setIsParticipantModalOpen(false)} title="Adicionar Participante">
+            <Modal isOpen={isParticipantModalOpen} onClose={() => { setIsParticipantModalOpen(false); setEditingParticipant(null); }} title={editingParticipant ? "Editar Participante" : "Adicionar Participante"}>
                 <div className="space-y-4" onKeyDown={e => e.key === 'Enter' && handleSaveParticipant()}>
                     <Input type="text" placeholder="Nome do participante" value={participantName} onChange={e => setParticipantName(e.target.value)} />
-                    <Button onClick={handleSaveParticipant} className="w-full">Adicionar</Button>
+                    <Button onClick={handleSaveParticipant} className="w-full">{editingParticipant ? "Guardar" : "Adicionar"}</Button>
                 </div>
             </Modal>
-             <Modal isOpen={isExpenseModalOpen} onClose={() => setIsExpenseModalOpen(false)} title="Adicionar Despesa">
+             <Modal isOpen={isExpenseModalOpen} onClose={() => { setIsExpenseModalOpen(false); setEditingExpense(null); }} title={editingExpense ? "Editar Despesa" : "Adicionar Despesa"}>
                 <div className="space-y-4" onKeyDown={e => e.key === 'Enter' && handleSaveExpense()}>
                     <Input type="text" placeholder="Descrição (Ex: Carnes)" value={expenseDescription} onChange={e => setExpenseDescription(e.target.value)} />
                     <Input type="number" placeholder="Valor total" value={expenseAmount} onChange={e => setExpenseAmount(e.target.value)} />
@@ -1261,7 +1354,7 @@ const ConfrariaACDC = ({ db, userId, showAlert }) => {
                             ))}
                         </div>
                     </div>
-                    <Button onClick={handleSaveExpense} className="w-full">Adicionar Despesa</Button>
+                    <Button onClick={handleSaveExpense} className="w-full">{editingExpense ? "Guardar Alterações" : "Adicionar Despesa"}</Button>
                 </div>
             </Modal>
         </div>
@@ -1391,4 +1484,3 @@ export default function App() {
     </>
   );
 }
-
