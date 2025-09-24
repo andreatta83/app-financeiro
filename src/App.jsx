@@ -26,7 +26,7 @@ const analytics = getAnalytics(app);
 const appId = firebaseConfig.projectId;
 
 // Listas de Categorias e Tipos
-const CATEGORIES = ['Moradia', 'Transporte', 'Alimentação', 'Saúde', 'Lazer', 'Educação', 'Vestuário', 'Dívidas', 'Investimentos', 'Outros'];
+const CATEGORIES = ['Moradia', 'Transporte', 'Alimentação', 'Saúde', 'Lazer', 'Educação', 'Vestuário', 'Dívidas', 'Investimentos', 'Compras - Fernanda', 'Outros'];
 const EXPENSE_TYPES = {
     fixed: 'Fixo',
     essential: 'Essencial',
@@ -43,6 +43,7 @@ const CATEGORY_COLORS = {
     'Vestuário': '#C9CBCF',
     'Dívidas': '#E75252',
     'Investimentos': '#32CD32',
+    'Compras - Fernanda': '#FDB462',
     'Outros': '#A9A9A9'
 };
 
@@ -279,6 +280,44 @@ const MonthlyExpenses = ({ db, userId, showAlert, currentMonth }) => {
     return () => unsubscribe();
   }, [userId, currentMonth, db]);
 
+  const handleImportIncomes = async () => {
+    const [year, month] = currentMonth.split('-').map(Number);
+    const prevDate = new Date(year, month - 2, 1);
+    const prevMonthStr = prevDate.toISOString().slice(0, 7);
+
+    const prevDocRef = doc(db, 'artifacts', appId, 'users', userId, 'monthlyData', prevMonthStr);
+    const prevDocSnap = await getDoc(prevDocRef);
+
+    if (!prevDocSnap.exists() || !(prevDocSnap.data().incomes?.length > 0)) {
+        showAlert("Aviso", "Não há receitas no mês anterior para importar.");
+        return;
+    }
+
+    const prevIncomes = prevDocSnap.data().incomes;
+    const currentIncomeNames = new Set(incomes.map(i => i.name));
+    
+    const newIncomesToImport = prevIncomes.filter(i => !currentIncomeNames.has(i.name));
+
+    if (newIncomesToImport.length === 0) {
+        showAlert("Aviso", "Todas as receitas do mês anterior já existem no mês atual.");
+        return;
+    }
+
+    const newId = () => Date.now().toString() + Math.random();
+    const importedIncomes = newIncomesToImport.map(item => ({ ...item, id: newId() }));
+
+    const updatedIncomes = [...incomes, ...importedIncomes];
+
+    try {
+        const docRef = doc(db, 'artifacts', appId, 'users', userId, 'monthlyData', currentMonth);
+        await setDoc(docRef, { incomes: updatedIncomes }, { merge: true });
+        showAlert("Sucesso", `${importedIncomes.length} receita(s) importada(s) com sucesso!`);
+    } catch (error) {
+        console.error("Erro ao importar receitas:", error);
+        showAlert("Erro", "Não foi possível importar as receitas.");
+    }
+  };
+
   const handleSave = async () => {
     if (!itemName || !itemValue) return;
     const value = parseFloat(itemValue);
@@ -351,7 +390,13 @@ const MonthlyExpenses = ({ db, userId, showAlert, currentMonth }) => {
     const total = (data || []).reduce((sum, item) => sum + item.value, 0);
     return (
       <div className="bg-gray-800 rounded-2xl p-6">
-        <div className="flex justify-between items-center mb-4"><h3 className="text-xl font-bold text-white">{title}</h3><Button onClick={() => openModal(type)} variant="secondary"><Plus size={16} /> Adicionar</Button></div>
+        <div className="flex justify-between items-center mb-4">
+            <h3 className="text-xl font-bold text-white">{title}</h3>
+            <div className="flex gap-2">
+                {!isExpense && <Button onClick={handleImportIncomes} variant="secondary"><ArrowDown size={16} /> Importar</Button>}
+                <Button onClick={() => openModal(type)}><Plus size={16} /> Adicionar</Button>
+            </div>
+        </div>
         <div className="overflow-x-auto"><table className="w-full text-left">
             <thead><tr className="border-b border-gray-700">
                 <th className="p-3 text-sm font-semibold text-gray-400">Descrição</th>
@@ -1484,3 +1529,4 @@ export default function App() {
     </>
   );
 }
+
