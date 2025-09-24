@@ -167,7 +167,7 @@ const LoginScreen = ({ showAlert }) => {
             <div className="w-full max-w-md">
                 <div className="text-center mb-8">
                     <h1 className="text-4xl font-bold text-white">AndFinance</h1>
-                    <p className="text-gray-400 mt-2">Faça login para aceder ao seu painel.</p>
+                    <p className="text-gray-400 mt-2">Faça login para utilizar o sistema.</p>
                 </div>
                 <form onSubmit={handleLogin} className="bg-gray-800 p-8 rounded-2xl shadow-2xl space-y-6">
                     <div>
