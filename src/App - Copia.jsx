@@ -264,8 +264,7 @@ const MonthlyExpenses = ({ db, userId, showAlert, currentMonth }) => {
       if (docSnap.exists()) {
         const data = docSnap.data();
         setIncomes(data.incomes || []);
-        const defaultExpenses = { fixed: [], essential: [], variable: [], superfluous: [] };
-        setExpenses({ ...defaultExpenses, ...(data.expenses || {}) });
+        setExpenses(data.expenses || { fixed: [], essential: [], variable: [], superfluous: [] });
       } else {
         setIncomes([]);
         setExpenses({ fixed: [], essential: [], variable: [], superfluous: [] });
@@ -348,7 +347,7 @@ const MonthlyExpenses = ({ db, userId, showAlert, currentMonth }) => {
 
   const renderTable = (title, data, type) => {
     const isExpense = type !== 'income';
-    const total = (data || []).reduce((sum, item) => sum + item.value, 0);
+    const total = data.reduce((sum, item) => sum + item.value, 0);
     return (
       <div className="bg-gray-800 rounded-2xl p-6">
         <div className="flex justify-between items-center mb-4"><h3 className="text-xl font-bold text-white">{title}</h3><Button onClick={() => openModal(type)} variant="secondary"><Plus size={16} /> Adicionar</Button></div>
@@ -360,7 +359,7 @@ const MonthlyExpenses = ({ db, userId, showAlert, currentMonth }) => {
                 <th className="p-3 text-sm font-semibold text-gray-400 text-right">Ações</th>
             </tr></thead>
             <tbody>
-              {(data || []).map(item => (<tr key={item.id} className="border-b border-gray-700/50">
+              {data.map(item => (<tr key={item.id} className="border-b border-gray-700/50">
                 <td className="p-3 text-white">
                     {item.name}
                     {item.cardName && <span className="text-xs text-gray-400 ml-2">({item.cardName})</span>}
@@ -372,7 +371,7 @@ const MonthlyExpenses = ({ db, userId, showAlert, currentMonth }) => {
                     <button onClick={() => requestDelete(type, item.id)} className="text-red-400 hover:text-red-300"><Trash2 size={16} /></button>
                 </td>
               </tr>))}
-              {(data || []).length === 0 && (<tr><td colSpan={isExpense ? 4 : 3} className="text-center p-4 text-gray-500">Nenhum item.</td></tr>)}
+              {data.length === 0 && (<tr><td colSpan={isExpense ? 4 : 3} className="text-center p-4 text-gray-500">Nenhum item.</td></tr>)}
             </tbody>
             <tfoot><tr className="font-bold">
                 <td className="p-3 text-white" colSpan={isExpense ? 2 : 1}>Total</td>
@@ -839,67 +838,52 @@ const Investments = ({ db, userId, showAlert }) => {
 
 const Dashboard = ({ db, userId, showAlert, currentMonth }) => {
     const [monthlyData, setMonthlyData] = useState(null);
-    const [cardData, setCardData] = useState(null);
+    const [cardData, setCardData] = useState([]);
     const [investmentData, setInvestmentData] = useState(null);
-    
+
     useEffect(() => {
         if (!userId) return;
-
         const unsubscribers = [];
-        
-        const fetchData = async () => {
-            // Reset states to indicate loading
-            setMonthlyData(null);
-            setCardData(null);
-            setInvestmentData(null);
 
-            // Monthly Data
-            const monthlyDocRef = doc(db, 'artifacts', appId, 'users', userId, 'monthlyData', currentMonth);
-            unsubscribers.push(onSnapshot(monthlyDocRef, (docSnap) => {
-                setMonthlyData(docSnap.exists() ? docSnap.data() : { incomes: [], expenses: {} });
-            }, (error) => {
-                console.error("Dashboard: Erro ao carregar dados mensais:", error);
-                showAlert("Erro de Leitura (Mensal)", `Não foi possível carregar os dados do dashboard.\n\nErro: ${error.code || error.message}`);
-                setMonthlyData({ incomes: [], expenses: {} }); // Set to empty to stop loading
-            }));
+        const monthlyDocRef = doc(db, 'artifacts', appId, 'users', userId, 'monthlyData', currentMonth);
+        unsubscribers.push(onSnapshot(monthlyDocRef, (docSnap) => {
+            setMonthlyData(docSnap.exists() ? docSnap.data() : { incomes: [], expenses: {} });
+        }, (error) => {
+            console.error("Dashboard: Erro ao carregar dados mensais:", error);
+            showAlert("Erro de Leitura (Mensal)", `Não foi possível carregar os dados do dashboard.\n\nErro: ${error.code || error.message}`);
+        }));
 
-            // Card Data
-            const cardsCollectionRef = collection(db, 'artifacts', appId, 'users', userId, 'creditCards');
-            unsubscribers.push(onSnapshot(query(cardsCollectionRef), (querySnapshot) => {
-                setCardData(querySnapshot.docs.map(d => d.data()));
-            }, (error) => {
-                console.error("Dashboard: Erro ao carregar dados dos cartões:", error);
-                showAlert("Erro de Leitura (Cartões)", `Não foi possível carregar os dados do dashboard.\n\nErro: ${error.code || error.message}`);
-                setCardData([]);
-            }));
+        const cardsCollectionRef = collection(db, 'artifacts', appId, 'users', userId, 'creditCards');
+        unsubscribers.push(onSnapshot(query(cardsCollectionRef), (querySnapshot) => {
+            setCardData(querySnapshot.docs.map(d => d.data()));
+        }, (error) => {
+            console.error("Dashboard: Erro ao carregar dados dos cartões:", error);
+            showAlert("Erro de Leitura (Cartões)", `Não foi possível carregar os dados do dashboard.\n\nErro: ${error.code || error.message}`);
+        }));
 
-            // Investment Data
-            const investmentDocRef = doc(db, 'artifacts', appId, 'users', userId, 'investments', 'data');
-            unsubscribers.push(onSnapshot(investmentDocRef, (docSnap) => {
-                setInvestmentData(docSnap.exists() ? docSnap.data() : { history: [] });
-            }, (error) => {
-                console.error("Dashboard: Erro ao carregar dados de investimentos:", error);
-                showAlert("Erro de Leitura (Investimentos)", `Não foi possível carregar os dados do dashboard.\n\nErro: ${error.code || error.message}`);
-                setInvestmentData({ history: [] });
-            }));
-        }
+        const investmentDocRef = doc(db, 'artifacts', appId, 'users', userId, 'investments', 'data');
+        unsubscribers.push(onSnapshot(investmentDocRef, (docSnap) => {
+            setInvestmentData(docSnap.exists() ? docSnap.data() : { history: [] });
+        }, (error) => {
+            console.error("Dashboard: Erro ao carregar dados de investimentos:", error);
+            showAlert("Erro de Leitura (Investimentos)", `Não foi possível carregar os dados do dashboard.\n\nErro: ${error.code || error.message}`);
+        }));
 
-        fetchData();
         return () => unsubscribers.forEach(unsub => unsub());
     }, [userId, db, currentMonth, showAlert]);
 
     const summary = useMemo(() => {
-        if (!monthlyData || !cardData || !investmentData) return null;
-
-        const totalIncomes = (monthlyData.incomes || []).reduce((sum, i) => sum + i.value, 0);
-        const monthlyExpenses = Object.values(monthlyData.expenses || {}).flat();
+        const totalIncomes = (monthlyData?.incomes || []).reduce((sum, i) => sum + i.value, 0);
+        
+        const monthlyExpenses = Object.values(monthlyData?.expenses || {}).flat();
+        
         const totalExpensesValue = monthlyExpenses.reduce((sum, e) => sum + e.value, 0);
         const balance = totalIncomes - totalExpensesValue;
         
         const cardExpenses = cardData.flatMap(card => card.expenses || []).filter(exp => exp.date.startsWith(currentMonth));
         const totalCardDebt = cardExpenses.reduce((sum, e) => sum + e.value, 0);
         
-        const investmentHistory = investmentData.history || [];
+        const investmentHistory = investmentData?.history || [];
         const investmentTotal = investmentHistory.length > 0 ? investmentHistory[investmentHistory.length - 1].total : 0;
 
         const categoryAggregates = monthlyExpenses.reduce((acc, expense) => {
@@ -908,7 +892,7 @@ const Dashboard = ({ db, userId, showAlert, currentMonth }) => {
             return acc;
         }, {});
         
-        const monthlyExpenseTypes = Object.entries(monthlyData.expenses || {}).reduce((acc, [type, expenses]) => {
+        const monthlyExpenseTypes = Object.entries(monthlyData?.expenses || {}).reduce((acc, [type, expenses]) => {
             acc[type] = expenses.reduce((sum, e) => sum + e.value, 0);
             return acc;
         }, {});
@@ -925,28 +909,18 @@ const Dashboard = ({ db, userId, showAlert, currentMonth }) => {
     }, [monthlyData, cardData, investmentData, currentMonth]);
 
     const pieChartData = useMemo(() => {
-        if (!summary) return [];
         return Object.entries(summary.categoryAggregates)
             .map(([name, value]) => ({ name, value }))
             .filter(item => item.value > 0);
-    }, [summary]);
+    }, [summary.categoryAggregates]);
 
     const expenseTypeData = useMemo(() => {
-        if (!summary) return [];
         const labels = { fixed: 'Fixos', essential: 'Essenciais', variable: 'Variáveis', superfluous: 'Supérfluos' };
         return Object.entries(summary.monthlyExpenseTypes).map(([type, value]) => ({
             name: labels[type] || type,
             value
         }));
-    }, [summary]);
-    
-    if (!summary) {
-        return (
-            <div className="flex justify-center items-center h-64">
-                <div className="animate-spin rounded-full h-16 w-16 border-t-2 border-b-2 border-blue-500"></div>
-            </div>
-        );
-    }
+    }, [summary.monthlyExpenseTypes]);
 
     return (
         <div className="space-y-8">
@@ -1039,22 +1013,11 @@ const MainApp = ({ userId, showAlert }) => {
         setCurrentMonth(date.toISOString().slice(0, 7));
     };
 
-    const renderTabContent = () => {
-        const commonProps = { db, userId, showAlert };
-        const monthlyProps = { ...commonProps, currentMonth };
-
-        switch (activeTab) {
-            case 'dashboard':
-                return <Dashboard {...monthlyProps} />;
-            case 'monthly':
-                return <MonthlyExpenses {...monthlyProps} />;
-            case 'cards':
-                return <CardControl {...monthlyProps} />;
-            case 'investments':
-                return <Investments {...commonProps} />;
-            default:
-                return null;
-        }
+    const tabs = {
+        dashboard: { label: 'Dashboard', icon: <LayoutDashboard size={20} />, component: <Dashboard db={db} userId={userId} showAlert={showAlert} currentMonth={currentMonth} /> },
+        monthly: { label: 'Gastos Mensais', icon: <Landmark size={20} />, component: <MonthlyExpenses db={db} userId={userId} showAlert={showAlert} currentMonth={currentMonth} /> },
+        cards: { label: 'Cartões', icon: <CreditCard size={20} />, component: <CardControl db={db} userId={userId} showAlert={showAlert} currentMonth={currentMonth} /> },
+        investments: { label: 'Investimentos', icon: <TrendingUp size={20} />, component: <Investments db={db} userId={userId} showAlert={showAlert} /> },
     };
 
     return (
@@ -1082,19 +1045,12 @@ const MainApp = ({ userId, showAlert }) => {
                 )}
 
                 <div className="bg-gray-800/50 backdrop-blur-sm rounded-2xl p-2 mb-8 flex flex-wrap justify-center gap-2">
-                    {Object.entries({
-                        dashboard: { label: 'Dashboard', icon: <LayoutDashboard size={20} /> },
-                        monthly: { label: 'Gastos Mensais', icon: <Landmark size={20} /> },
-                        cards: { label: 'Cartões', icon: <CreditCard size={20} /> },
-                        investments: { label: 'Investimentos', icon: <TrendingUp size={20} /> },
-                    }).map(([key, { label, icon }]) => (<button key={key} onClick={() => setActiveTab(key)} className={`flex-grow md:flex-grow-0 px-4 py-2 rounded-lg flex items-center justify-center gap-2 font-semibold transition ${activeTab === key ? 'bg-blue-600 text-white shadow-lg' : 'text-gray-300 hover:bg-gray-700/50'}`}>{icon}<span>{label}</span></button>))}
+                    {Object.entries(tabs).map(([key, { label, icon }]) => (<button key={key} onClick={() => setActiveTab(key)} className={`flex-grow md:flex-grow-0 px-4 py-2 rounded-lg flex items-center justify-center gap-2 font-semibold transition ${activeTab === key ? 'bg-blue-600 text-white shadow-lg' : 'text-gray-300 hover:bg-gray-700/50'}`}>{icon}<span>{label}</span></button>))}
                 </div>
-                <main>
-                   {renderTabContent()}
-                </main>
+                <main>{tabs[activeTab].component}</main>
                 <footer className="text-center text-gray-500 mt-12 text-sm">
                     <p>O seu ID de utilizador (para referência): {userId || 'Nenhum'}</p>
-                    <p>Desenvolvido com React e Firebase.</p>
+                    <p>Powered by Andreatta Corp.</p>
                 </footer>
             </div>
         </div>
@@ -1136,4 +1092,3 @@ export default function App() {
     </>
   );
 }
-
