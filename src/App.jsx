@@ -166,7 +166,7 @@ const LoginScreen = ({ showAlert }) => {
         <div className="bg-gray-900 min-h-screen flex flex-col justify-center items-center p-4">
             <div className="w-full max-w-md">
                 <div className="text-center mb-8">
-                    <h1 className="text-4xl font-bold text-white">Controle Financeiro</h1>
+                    <h1 className="text-4xl font-bold text-white">AndFinance</h1>
                     <p className="text-gray-400 mt-2">Faça login para aceder ao seu painel.</p>
                 </div>
                 <form onSubmit={handleLogin} className="bg-gray-800 p-8 rounded-2xl shadow-2xl space-y-6">
@@ -1316,7 +1316,7 @@ const MainApp = ({ userId, showAlert }) => {
             <div className="container mx-auto p-4 md:p-8">
                 <header className="mb-8 flex justify-between items-center">
                     <div>
-                        <h1 className="text-4xl font-bold">Controle Financeiro Inteligente</h1>
+                        <h1 className="text-4xl font-bold">AndFinance</h1>
                         <p className="text-gray-400 mt-2">O seu assistente pessoal para uma vida financeira organizada.</p>
                     </div>
                     <Button onClick={handleLogout} variant="danger">
@@ -1349,7 +1349,7 @@ const MainApp = ({ userId, showAlert }) => {
                 </main>
                 <footer className="text-center text-gray-500 mt-12 text-sm">
                     <p>O seu ID de utilizador (para referência): {userId || 'Nenhum'}</p>
-                    <p>Desenvolvido com React e Firebase.</p>
+                    <p>Powered by Andreatta Corp.</p>
                 </footer>
             </div>
         </div>
