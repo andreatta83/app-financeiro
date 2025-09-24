@@ -3,7 +3,7 @@ import { initializeApp } from 'firebase/app';
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'firebase/auth';
 import { getFirestore, doc, onSnapshot, setDoc, updateDoc, collection, query, addDoc, deleteDoc, getDoc, getDocs, writeBatch } from 'firebase/firestore';
 import { getAnalytics } from "firebase/analytics";
-import { Landmark, CreditCard, TrendingUp, LayoutDashboard, Plus, Trash2, Edit, X, Copy, ArrowDown, ArrowUp, LogOut, KeyRound, Target, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Landmark, CreditCard, TrendingUp, LayoutDashboard, Plus, Trash2, Edit, X, ArrowDown, ArrowUp, LogOut, KeyRound, Target, ChevronLeft, ChevronRight, Users, UtensilsCrossed, HandCoins, ArrowRightLeft } from 'lucide-react';
 import { PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 
 
@@ -60,7 +60,7 @@ const Modal = ({ isOpen, onClose, title, children }) => {
             <X size={24} />
           </button>
         </div>
-        <div className="p-6">{children}</div>
+        <div className="p-6 max-h-[80vh] overflow-y-auto">{children}</div>
       </div>
     </div>
   );
@@ -1017,6 +1017,258 @@ const Dashboard = ({ db, userId, showAlert, currentMonth }) => {
     );
 };
 
+// --- NOVA ABA: CONFRA ACDC (Tricount Clone) ---
+
+const ConfrariaACDC = ({ db, userId, showAlert }) => {
+    const [eventData, setEventData] = useState({ participants: [], expenses: [] });
+    const [isParticipantModalOpen, setIsParticipantModalOpen] = useState(false);
+    const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false);
+    const [participantName, setParticipantName] = useState('');
+    
+    const [expenseDescription, setExpenseDescription] = useState('');
+    const [expenseAmount, setExpenseAmount] = useState('');
+    const [paidById, setPaidById] = useState('');
+    const [involvedParticipants, setInvolvedParticipants] = useState({});
+
+    const docRef = useMemo(() => {
+        if (!userId) return null;
+        return doc(db, 'artifacts', appId, 'users', userId, 'confrariaEvents', 'mainEvent');
+    }, [userId]);
+
+    useEffect(() => {
+        if (!docRef) return;
+        const unsubscribe = onSnapshot(docRef, (docSnap) => {
+            setEventData(docSnap.exists() ? docSnap.data() : { participants: [], expenses: [] });
+        }, (error) => {
+            console.error("Erro no listener do Firestore (Confraria): ", error);
+            showAlert("Erro de Leitura", "Não foi possível carregar os dados do evento.");
+        });
+        return () => unsubscribe();
+    }, [docRef]);
+
+    const handleSaveParticipant = async () => {
+        if (!participantName.trim()) return;
+        const newParticipant = { id: Date.now().toString(), name: participantName.trim() };
+        const updatedParticipants = [...eventData.participants, newParticipant];
+        try {
+            await setDoc(docRef, { ...eventData, participants: updatedParticipants }, { merge: true });
+            setIsParticipantModalOpen(false);
+            setParticipantName('');
+        } catch (error) {
+            showAlert("Erro", "Não foi possível adicionar o participante.");
+        }
+    };
+    
+    const handleSaveExpense = async () => {
+        const amount = parseFloat(expenseAmount);
+        if (!expenseDescription.trim() || isNaN(amount) || amount <= 0 || !paidById) return;
+        
+        const involvedIds = Object.keys(involvedParticipants).filter(id => involvedParticipants[id]);
+        if (involvedIds.length === 0) {
+            showAlert("Erro", "Selecione pelo menos um participante envolvido na despesa.");
+            return;
+        }
+
+        const paidByName = eventData.participants.find(p => p.id === paidById)?.name || '';
+
+        const newExpense = {
+            id: Date.now().toString(),
+            description: expenseDescription.trim(),
+            amount,
+            paidById,
+            paidByName,
+            participantsIds: involvedIds
+        };
+        const updatedExpenses = [...eventData.expenses, newExpense];
+        try {
+            await setDoc(docRef, { ...eventData, expenses: updatedExpenses }, { merge: true });
+            setIsExpenseModalOpen(false);
+            setExpenseDescription('');
+            setExpenseAmount('');
+            setPaidById('');
+        } catch(error) {
+            showAlert("Erro", "Não foi possível adicionar a despesa.");
+        }
+    };
+
+    const balances = useMemo(() => {
+        const balances = {};
+        eventData.participants.forEach(p => {
+            balances[p.id] = { name: p.name, paid: 0, owed: 0, balance: 0 };
+        });
+
+        eventData.expenses.forEach(expense => {
+            if (balances[expense.paidById]) {
+                balances[expense.paidById].paid += expense.amount;
+            }
+            const share = expense.amount / expense.participantsIds.length;
+            expense.participantsIds.forEach(pId => {
+                if(balances[pId]) {
+                    balances[pId].owed += share;
+                }
+            });
+        });
+
+        Object.values(balances).forEach(b => {
+            b.balance = b.paid - b.owed;
+        });
+        
+        return balances;
+    }, [eventData]);
+
+    const transactions = useMemo(() => {
+        const balancesCopy = JSON.parse(JSON.stringify(balances));
+        const debtors = Object.entries(balancesCopy).filter(([,b]) => b.balance < 0).map(([id, data]) => ({ id, name: data.name, amount: -data.balance }));
+        const creditors = Object.entries(balancesCopy).filter(([,b]) => b.balance > 0).map(([id, data]) => ({ id, name: data.name, amount: data.balance }));
+        const transactions = [];
+
+        debtors.sort((a,b) => a.amount - b.amount);
+        creditors.sort((a,b) => a.amount - b.amount);
+
+        let i = 0, j = 0;
+        while(i < debtors.length && j < creditors.length) {
+            const debtor = debtors[i];
+            const creditor = creditors[j];
+            const amount = Math.min(debtor.amount, creditor.amount);
+
+            if (amount > 0.01) { // Avoid tiny transactions
+                transactions.push({ from: debtor.name, to: creditor.name, amount });
+                debtor.amount -= amount;
+                creditor.amount -= amount;
+            }
+
+            if(debtor.amount < 0.01) i++;
+            if(creditor.amount < 0.01) j++;
+        }
+        return transactions;
+
+    }, [balances]);
+
+    const totalSpent = eventData.expenses.reduce((sum, e) => sum + e.amount, 0);
+
+    return (
+        <div className="space-y-8">
+            <h2 className="text-3xl font-bold text-white">Divisão de Contas - Confra ACDC</h2>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                 <StatCard title="Total Gasto" value={`R$ ${totalSpent.toFixed(2)}`} icon={<UtensilsCrossed size={24} />} color="bg-orange-500/30 text-orange-400" />
+                 <StatCard title="Participantes" value={eventData.participants.length} icon={<Users size={24} />} color="bg-blue-500/30 text-blue-400" />
+                 <StatCard title="Nº de Despesas" value={eventData.expenses.length} icon={<HandCoins size={24} />} color="bg-green-500/30 text-green-400" />
+            </div>
+
+            {/* Ações */}
+            <div className="flex gap-4">
+                <Button onClick={() => { setParticipantName(''); setIsParticipantModalOpen(true); }} className="flex-1"><Users size={16} /> Adicionar Participante</Button>
+                <Button onClick={() => {
+                     setExpenseDescription('');
+                     setExpenseAmount('');
+                     setPaidById(eventData.participants[0]?.id || '');
+                     const allInvolved = eventData.participants.reduce((acc, p) => ({ ...acc, [p.id]: true }), {});
+                     setInvolvedParticipants(allInvolved);
+                     setIsExpenseModalOpen(true);
+                }} className="flex-1" variant="secondary" disabled={eventData.participants.length === 0}>
+                    <Plus size={16} /> Adicionar Despesa
+                </Button>
+            </div>
+
+            {/* Acerto de Contas */}
+            <div className="bg-gray-800 rounded-2xl p-6">
+                <h3 className="text-xl font-bold text-white mb-4 flex items-center gap-2"><ArrowRightLeft size={20} />Acerto de Contas</h3>
+                {transactions.length > 0 ? (
+                     <ul className="space-y-3">
+                         {transactions.map((t, index) => (
+                             <li key={index} className="flex items-center justify-between bg-gray-700 p-3 rounded-lg">
+                                 <div className="flex items-center gap-3">
+                                     <span className="font-semibold text-red-400">{t.from}</span>
+                                     <ArrowRightLeft size={16} className="text-gray-400" />
+                                     <span className="font-semibold text-green-400">{t.to}</span>
+                                 </div>
+                                 <span className="font-bold text-lg">R$ {t.amount.toFixed(2)}</span>
+                             </li>
+                         ))}
+                     </ul>
+                ) : (
+                    <p className="text-gray-400 text-center py-4">As contas estão equilibradas ou não há despesas para dividir.</p>
+                )}
+            </div>
+
+            {/* Detalhes (Saldos, Despesas, Participantes) */}
+             <div className="grid lg:grid-cols-2 gap-8">
+                {/* Saldos Individuais */}
+                <div className="bg-gray-800 rounded-2xl p-6">
+                    <h3 className="text-xl font-bold text-white mb-4">Saldos</h3>
+                    <ul className="space-y-2">
+                        {Object.values(balances).map(b => (
+                            <li key={b.name} className="flex justify-between items-center text-white p-2 rounded bg-gray-700/50">
+                                <span>{b.name}</span>
+                                <div className="text-right">
+                                    <span className={`font-bold text-lg ${b.balance > 0 ? 'text-green-400' : b.balance < 0 ? 'text-red-400' : 'text-gray-300'}`}>
+                                        {b.balance >= 0 ? '+' : '-'} R$ {Math.abs(b.balance).toFixed(2)}
+                                    </span>
+                                    <div className="text-xs text-gray-400">Pagou R$ {b.paid.toFixed(2)} / Devia R$ {b.owed.toFixed(2)}</div>
+                                </div>
+                            </li>
+                        ))}
+                    </ul>
+                </div>
+                 {/* Lista de Despesas */}
+                <div className="bg-gray-800 rounded-2xl p-6">
+                    <h3 className="text-xl font-bold text-white mb-4">Despesas</h3>
+                    <ul className="space-y-2">
+                        {eventData.expenses.map(e => (
+                             <li key={e.id} className="flex justify-between items-center text-white p-2 rounded bg-gray-700/50">
+                                 <div>
+                                    <span>{e.description}</span>
+                                    <p className="text-xs text-gray-400">Pago por: {e.paidByName}</p>
+                                 </div>
+                                 <span className="font-bold">R$ {e.amount.toFixed(2)}</span>
+                             </li>
+                        ))}
+                    </ul>
+                </div>
+            </div>
+
+            {/* Modals */}
+            <Modal isOpen={isParticipantModalOpen} onClose={() => setIsParticipantModalOpen(false)} title="Adicionar Participante">
+                <div className="space-y-4" onKeyDown={e => e.key === 'Enter' && handleSaveParticipant()}>
+                    <Input type="text" placeholder="Nome do participante" value={participantName} onChange={e => setParticipantName(e.target.value)} />
+                    <Button onClick={handleSaveParticipant} className="w-full">Adicionar</Button>
+                </div>
+            </Modal>
+             <Modal isOpen={isExpenseModalOpen} onClose={() => setIsExpenseModalOpen(false)} title="Adicionar Despesa">
+                <div className="space-y-4" onKeyDown={e => e.key === 'Enter' && handleSaveExpense()}>
+                    <Input type="text" placeholder="Descrição (Ex: Carnes)" value={expenseDescription} onChange={e => setExpenseDescription(e.target.value)} />
+                    <Input type="number" placeholder="Valor total" value={expenseAmount} onChange={e => setExpenseAmount(e.target.value)} />
+                     <div>
+                        <label className="block text-gray-400 mb-2 text-sm">Quem pagou?</label>
+                        <Select value={paidById} onChange={e => setPaidById(e.target.value)}>
+                            {eventData.participants.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                        </Select>
+                    </div>
+                     <div>
+                        <label className="block text-gray-400 mb-2 text-sm">Para quem é esta despesa?</label>
+                        <div className="space-y-2 p-3 bg-gray-900 rounded-lg max-h-40 overflow-y-auto">
+                            {eventData.participants.map(p => (
+                                <div key={p.id} className="flex items-center">
+                                    <input 
+                                        type="checkbox" 
+                                        id={`p-${p.id}`} 
+                                        checked={!!involvedParticipants[p.id]}
+                                        onChange={e => setInvolvedParticipants({...involvedParticipants, [p.id]: e.target.checked})}
+                                        className="h-4 w-4 rounded border-gray-500 text-blue-600 focus:ring-blue-500 bg-gray-700"
+                                    />
+                                    <label htmlFor={`p-${p.id}`} className="ml-3 text-white">{p.name}</label>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                    <Button onClick={handleSaveExpense} className="w-full">Adicionar Despesa</Button>
+                </div>
+            </Modal>
+        </div>
+    );
+};
+
+
 // --- COMPONENTE PRINCIPAL DA APLICAÇÃO ---
 
 const MainApp = ({ userId, showAlert }) => {
@@ -1050,6 +1302,8 @@ const MainApp = ({ userId, showAlert }) => {
                 return <MonthlyExpenses {...monthlyProps} />;
             case 'cards':
                 return <CardControl {...monthlyProps} />;
+            case 'confraria':
+                return <ConfrariaACDC {...commonProps} />;
             case 'investments':
                 return <Investments {...commonProps} />;
             default:
@@ -1086,6 +1340,7 @@ const MainApp = ({ userId, showAlert }) => {
                         dashboard: { label: 'Dashboard', icon: <LayoutDashboard size={20} /> },
                         monthly: { label: 'Gastos Mensais', icon: <Landmark size={20} /> },
                         cards: { label: 'Cartões', icon: <CreditCard size={20} /> },
+                        confraria: { label: 'Confra ACDC', icon: <Users size={20} /> },
                         investments: { label: 'Investimentos', icon: <TrendingUp size={20} /> },
                     }).map(([key, { label, icon }]) => (<button key={key} onClick={() => setActiveTab(key)} className={`flex-grow md:flex-grow-0 px-4 py-2 rounded-lg flex items-center justify-center gap-2 font-semibold transition ${activeTab === key ? 'bg-blue-600 text-white shadow-lg' : 'text-gray-300 hover:bg-gray-700/50'}`}>{icon}<span>{label}</span></button>))}
                 </div>
@@ -1136,3 +1391,4 @@ export default function App() {
     </>
   );
 }
+
