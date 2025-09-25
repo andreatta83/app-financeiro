@@ -215,6 +215,7 @@ const LoginScreen = ({ showAlert }) => {
 const MonthlyExpenses = ({ db, userId, showAlert, currentMonth }) => {
   const [incomes, setIncomes] = useState([]);
   const [expenses, setExpenses] = useState({ fixed: [], essential: [], variable: [], superfluous: [] });
+  const [expandedTables, setExpandedTables] = useState({});
   
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [modalType, setModalType] = useState('');
@@ -279,6 +280,10 @@ const MonthlyExpenses = ({ db, userId, showAlert, currentMonth }) => {
 
     return () => unsubscribe();
   }, [userId, currentMonth, db]);
+  
+  const toggleTableExpansion = (type) => {
+    setExpandedTables(prev => ({ ...prev, [type]: !prev[type] }));
+  };
 
   const handleImportIncomes = async () => {
     const [year, month] = currentMonth.split('-').map(Number);
@@ -315,6 +320,47 @@ const MonthlyExpenses = ({ db, userId, showAlert, currentMonth }) => {
     } catch (error) {
         console.error("Erro ao importar receitas:", error);
         showAlert("Erro", "Não foi possível importar as receitas.");
+    }
+  };
+
+  const handleImportFixedExpenses = async () => {
+    const [year, month] = currentMonth.split('-').map(Number);
+    const prevDate = new Date(year, month - 2, 1);
+    const prevMonthStr = prevDate.toISOString().slice(0, 7);
+
+    const prevDocRef = doc(db, 'artifacts', appId, 'users', userId, 'monthlyData', prevMonthStr);
+    const prevDocSnap = await getDoc(prevDocRef);
+
+    if (!prevDocSnap.exists() || !(prevDocSnap.data().expenses?.fixed?.length > 0)) {
+        showAlert("Aviso", "Não há gastos fixos no mês anterior para importar.");
+        return;
+    }
+
+    const prevFixedExpenses = prevDocSnap.data().expenses.fixed;
+    const nonInstallmentExpenses = prevFixedExpenses.filter(exp => !exp.isInstallment);
+
+    const currentExpenseNames = new Set(expenses.fixed.map(e => e.name));
+    
+    const newExpensesToImport = nonInstallmentExpenses.filter(exp => !currentExpenseNames.has(exp.name));
+
+    if (newExpensesToImport.length === 0) {
+        showAlert("Aviso", "Todos os gastos fixos (não parcelados) do mês anterior já existem no mês atual.");
+        return;
+    }
+
+    const newId = () => Date.now().toString() + Math.random();
+    const importedExpenses = newExpensesToImport.map(item => ({ ...item, id: newId() }));
+
+    const updatedFixedExpenses = [...expenses.fixed, ...importedExpenses];
+    const updatedExpenses = { ...expenses, fixed: updatedFixedExpenses };
+
+    try {
+        const docRef = doc(db, 'artifacts', appId, 'users', userId, 'monthlyData', currentMonth);
+        await setDoc(docRef, { expenses: updatedExpenses }, { merge: true });
+        showAlert("Sucesso", `${importedExpenses.length} gasto(s) fixo(s) importado(s) com sucesso!`);
+    } catch (error) {
+        console.error("Erro ao importar gastos fixos:", error);
+        showAlert("Erro", "Não foi possível importar os gastos fixos.");
     }
   };
 
@@ -388,12 +434,17 @@ const MonthlyExpenses = ({ db, userId, showAlert, currentMonth }) => {
   const renderTable = (title, data, type) => {
     const isExpense = type !== 'income';
     const total = (data || []).reduce((sum, item) => sum + item.value, 0);
+    const isExpanded = !!expandedTables[type];
+    const displayData = isExpanded ? (data || []) : (data || []).slice(0, 3);
+    const canBeCollapsed = (data || []).length > 3;
+
     return (
       <div className="bg-gray-800 rounded-2xl p-6">
         <div className="flex justify-between items-center mb-4">
             <h3 className="text-xl font-bold text-white">{title}</h3>
             <div className="flex gap-2">
-                {!isExpense && <Button onClick={handleImportIncomes} variant="secondary"><ArrowDown size={16} /> Importar</Button>}
+                {type === 'income' && <Button onClick={handleImportIncomes} variant="secondary"><ArrowDown size={16} /> Importar</Button>}
+                {type === 'fixed' && <Button onClick={handleImportFixedExpenses} variant="secondary"><ArrowDown size={16} /> Importar</Button>}
                 <Button onClick={() => openModal(type)}><Plus size={16} /> Adicionar</Button>
             </div>
         </div>
@@ -405,7 +456,7 @@ const MonthlyExpenses = ({ db, userId, showAlert, currentMonth }) => {
                 <th className="p-3 text-sm font-semibold text-gray-400 text-right">Ações</th>
             </tr></thead>
             <tbody>
-              {(data || []).map(item => (<tr key={item.id} className="border-b border-gray-700/50">
+              {displayData.map(item => (<tr key={item.id} className="border-b border-gray-700/50">
                 <td className="p-3 text-white">
                     {item.name}
                     {item.cardName && <span className="text-xs text-gray-400 ml-2">({item.cardName})</span>}
@@ -417,12 +468,23 @@ const MonthlyExpenses = ({ db, userId, showAlert, currentMonth }) => {
                     <button onClick={() => requestDelete(type, item.id)} className="text-red-400 hover:text-red-300"><Trash2 size={16} /></button>
                 </td>
               </tr>))}
-              {(data || []).length === 0 && (<tr><td colSpan={isExpense ? 4 : 3} className="text-center p-4 text-gray-500">Nenhum item.</td></tr>)}
+              {displayData.length === 0 && (<tr><td colSpan={isExpense ? 4 : 3} className="text-center p-4 text-gray-500">Nenhum item.</td></tr>)}
             </tbody>
-            <tfoot><tr className="font-bold">
-                <td className="p-3 text-white" colSpan={isExpense ? 2 : 1}>Total</td>
-                <td className="p-3 text-white text-right" colSpan="2">R$ {total.toFixed(2)}</td>
-            </tr></tfoot>
+            <tfoot>
+                <tr className="font-bold">
+                    <td className="p-3 text-white" colSpan={isExpense ? 2 : 1}>Total</td>
+                    <td className="p-3 text-white text-right" colSpan="2">R$ {total.toFixed(2)}</td>
+                </tr>
+                {canBeCollapsed && (
+                    <tr>
+                        <td colSpan={isExpense ? 4 : 3} className="text-center pt-2">
+                            <button onClick={() => toggleTableExpansion(type)} className="text-blue-400 hover:text-blue-300 text-sm font-semibold">
+                                {isExpanded ? 'Ver menos' : 'Ver mais...'}
+                            </button>
+                        </td>
+                    </tr>
+                )}
+            </tfoot>
         </table></div>
       </div>
     );
@@ -463,12 +525,14 @@ const MonthlyExpenses = ({ db, userId, showAlert, currentMonth }) => {
 
 const CardControl = ({ db, userId, showAlert, currentMonth }) => {
     const [cards, setCards] = useState([]);
+    const [expandedCards, setExpandedCards] = useState({});
     const [isCardModalOpen, setIsCardModalOpen] = useState(false);
     const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false);
     const [editingCard, setEditingCard] = useState(null);
     const [cardName, setCardName] = useState('');
     
     const [currentCardId, setCurrentCardId] = useState(null);
+    const [editingExpense, setEditingExpense] = useState(null);
     const [expenseDate, setExpenseDate] = useState(new Date().toISOString().slice(0, 10));
     const [expenseDescription, setExpenseDescription] = useState('');
     const [expenseValue, setExpenseValue] = useState('');
@@ -496,6 +560,10 @@ const CardControl = ({ db, userId, showAlert, currentMonth }) => {
         });
         return () => unsubscribe();
     }, [cardsCollectionRef]);
+    
+    const toggleCardExpansion = (cardId) => {
+        setExpandedCards(prev => ({...prev, [cardId]: !prev[cardId]}));
+    };
 
     const openCardModal = (card = null) => { setEditingCard(card); setCardName(card ? card.name : ''); setIsCardModalOpen(true); };
     const closeCardModal = () => setIsCardModalOpen(false);
@@ -529,34 +597,55 @@ const CardControl = ({ db, userId, showAlert, currentMonth }) => {
         setIsConfirmOpen(false);
     };
 
-    const openExpenseModal = (cardId) => { 
+    const openExpenseModal = (cardId, expense = null) => { 
         setCurrentCardId(cardId); 
-        setExpenseDate(currentMonth + '-15');
-        setExpenseDescription(''); 
-        setExpenseValue('');
-        setExpenseCategory('Outros');
-        setExpenseType('variable');
-        setIsInstallment(false);
-        setCurrentInstallment(1);
-        setTotalInstallments(1);
+        setEditingExpense(expense);
+        setExpenseDate(expense ? expense.date : currentMonth + '-15');
+        setExpenseDescription(expense ? expense.description.replace(/ \(\d+\/\d+\)$/, '') : ''); 
+        setExpenseValue(expense ? expense.value : '');
+        setExpenseCategory(expense ? expense.category : 'Outros');
+        setExpenseType(expense ? expense.type : 'variable');
+        setIsInstallment(expense ? expense.isInstallment : false);
+        
+        if (expense && expense.isInstallment) {
+            const match = expense.description.match(/ \((\d+)\/(\d+)\)$/);
+            setCurrentInstallment(match ? parseInt(match[1]) : 1);
+            setTotalInstallments(match ? parseInt(match[2]) : 1);
+        } else {
+            setCurrentInstallment(1);
+            setTotalInstallments(1);
+        }
         setIsExpenseModalOpen(true); 
     };
-    const closeExpenseModal = () => setIsExpenseModalOpen(false);
+    const closeExpenseModal = () => {
+        setIsExpenseModalOpen(false);
+        setEditingExpense(null);
+    };
 
     const handleSaveExpense = async () => {
         if (!expenseDescription || !expenseValue || !expenseDate || !expenseType || !expenseCategory) return;
         const value = parseFloat(expenseValue);
         if (isNaN(value)) return;
 
+        if (editingExpense) {
+            // Primeiro apaga a despesa antiga (ou todas as parcelas)
+            if (editingExpense.isInstallment) {
+                await performDeleteInstallment(currentCardId, editingExpense.installmentId, false);
+            } else {
+                await performDeleteSingleExpense(currentCardId, editingExpense.id, false);
+            }
+        }
+
         const card = cards.find(c => c.id === currentCardId);
         if (!card) return;
 
         const batch = writeBatch(db);
-        const installmentId = isInstallment ? Date.now().toString() : null;
+        const installmentId = isInstallment ? (editingExpense?.installmentId || Date.now().toString()) : null;
         const numTotalInstallments = isInstallment ? parseInt(totalInstallments) : 1;
         const numCurrentInstallment = isInstallment ? parseInt(currentInstallment) : 1;
 
-        let cardExpenses = [...(card.expenses || [])];
+        let cardExpenses = [...(card.expenses || [])].filter(e => e.installmentId !== editingExpense?.installmentId && e.id !== editingExpense?.id);
+
 
         for (let i = 0; i < numTotalInstallments - (numCurrentInstallment - 1); i++) {
             const installmentNumber = numCurrentInstallment + i;
@@ -613,11 +702,41 @@ const CardControl = ({ db, userId, showAlert, currentMonth }) => {
         }
     };
 
-    const performDeleteSingleExpense = async (cardId, expenseId) => {
-        // Lógica para apagar despesa única
+    const performDeleteSingleExpense = async (cardId, expenseId, closeModal = true) => {
+        const batch = writeBatch(db);
+        const card = cards.find(c => c.id === cardId);
+        if (!card) return;
+
+        const expenseToDelete = (card.expenses || []).find(e => e.id === expenseId);
+        if (!expenseToDelete) return;
+
+        const updatedCardExpenses = (card.expenses || []).filter(e => e.id !== expenseId);
+        const cardDocRef = doc(cardsCollectionRef, cardId);
+        batch.update(cardDocRef, { expenses: updatedCardExpenses });
+
+        const month = expenseToDelete.date.slice(0, 7);
+        const type = expenseToDelete.type;
+        const monthlyDocRef = doc(db, 'artifacts', appId, 'users', userId, 'monthlyData', month);
+        const monthlyDocSnap = await getDoc(monthlyDocRef);
+
+        if (monthlyDocSnap.exists()) {
+            const monthlyData = monthlyDocSnap.data();
+            const typeExpenses = monthlyData.expenses[type] || [];
+            const updatedTypeExpenses = typeExpenses.filter(exp => exp.id !== expenseId);
+            const updatedMonthlyExpenses = { ...monthlyData.expenses, [type]: updatedTypeExpenses };
+            batch.set(monthlyDocRef, { expenses: updatedMonthlyExpenses }, { merge: true });
+        }
+        
+        try {
+            await batch.commit();
+            if (closeModal) setIsConfirmOpen(false);
+        } catch(error) {
+            console.error("Erro ao apagar despesa:", error);
+            showAlert("Erro ao Apagar", `Não foi possível apagar a despesa.\n\nErro: ${error.code}`);
+        }
     };
     
-    const performDeleteInstallment = async (cardId, installmentId) => {
+    const performDeleteInstallment = async (cardId, installmentId, closeModal = true) => {
         if (!installmentId) return;
         const batch = writeBatch(db);
         const card = cards.find(c => c.id === cardId);
@@ -644,7 +763,7 @@ const CardControl = ({ db, userId, showAlert, currentMonth }) => {
         Object.entries(monthlyDocsToUpdate).forEach(([month, data]) => {
             const updatedExpenses = { ...data.expenses };
             Object.keys(updatedExpenses).forEach(type => {
-                updatedExpenses[type] = updatedExpenses[type].filter(exp => exp.installmentId !== installmentId);
+                updatedExpenses[type] = (updatedExpenses[type] || []).filter(exp => exp.installmentId !== installmentId);
             });
             const docRef = doc(db, 'artifacts', appId, 'users', userId, 'monthlyData', month);
             batch.set(docRef, { expenses: updatedExpenses }, { merge: true });
@@ -652,11 +771,11 @@ const CardControl = ({ db, userId, showAlert, currentMonth }) => {
 
         try {
             await batch.commit();
+            if (closeModal) setIsConfirmOpen(false);
         } catch(error) {
             console.error("Erro ao apagar parcelas: ", error);
             showAlert("Erro ao Apagar", `Não foi possível apagar as parcelas.\n\nErro: ${error.code}`);
         }
-        setIsConfirmOpen(false);
     };
 
     const handleCardModalKeyDown = (event) => { if (event.key === 'Enter') { handleSaveCard(); } };
@@ -671,38 +790,56 @@ const CardControl = ({ db, userId, showAlert, currentMonth }) => {
                 {cards.map(card => {
                     const monthlyExpenses = (card.expenses || []).filter(exp => exp.date.startsWith(currentMonth));
                     const total = monthlyExpenses.reduce((sum, exp) => sum + exp.value, 0);
+                    const isExpanded = !!expandedCards[card.id];
+                    const displayData = isExpanded ? monthlyExpenses : monthlyExpenses.slice(0, 3);
+                    const canBeCollapsed = monthlyExpenses.length > 3;
+
                     return (
                         <div key={card.id} className="bg-gray-800 rounded-2xl p-6">
                             <div className="flex justify-between items-center mb-4 border-b border-gray-700 pb-4"><div><h3 className="text-xl font-bold text-white">{card.name}</h3><p className="text-red-400 font-semibold">Total do Mês: R$ {total.toFixed(2)}</p></div><div className="flex gap-2"><Button onClick={() => openExpenseModal(card.id)} variant="secondary"><Plus size={16} /> Adicionar Gasto</Button><Button onClick={() => requestDeleteCard(card.id)} variant="danger"><Trash2 size={16} /></Button></div></div>
                             <div className="overflow-x-auto"><table className="w-full text-left">
                                 <thead><tr className="border-b border-gray-700/50"><th className="p-2 text-sm font-semibold text-gray-400">Data</th><th className="p-2 text-sm font-semibold text-gray-400">Descrição</th><th className="p-2 text-sm font-semibold text-gray-400">Categoria</th><th className="p-2 text-sm font-semibold text-gray-400 text-right">Valor</th><th className="p-2 text-sm font-semibold text-gray-400 text-right">Ações</th></tr></thead>
                                 <tbody>
-                                    {monthlyExpenses.map(exp => (<tr key={exp.id}>
+                                    {displayData.map(exp => (<tr key={exp.id}>
                                         <td className="p-2 text-white">{new Date(exp.date + 'T00:00:00').toLocaleDateString('pt-BR')}</td>
                                         <td className="p-2 text-white">{exp.description}</td>
                                         <td className="p-2 text-white"><span className="bg-gray-700 text-xs font-semibold mr-2 px-2.5 py-0.5 rounded-full">{exp.category || 'N/A'}</span></td>
                                         <td className="p-2 text-white text-right">R$ {exp.value.toFixed(2)}</td>
-                                        <td className="p-2 text-right"><button onClick={() => requestDeleteExpense(card.id, exp.id)} className="text-red-400 hover:text-red-300"><Trash2 size={16} /></button></td>
+                                        <td className="p-2 text-right">
+                                            <button onClick={() => openExpenseModal(card.id, exp)} className="text-blue-400 hover:text-blue-300 mr-2"><Edit size={16} /></button>
+                                            <button onClick={() => requestDeleteExpense(card.id, exp.id)} className="text-red-400 hover:text-red-300"><Trash2 size={16} /></button>
+                                        </td>
                                     </tr>))}
                                     {monthlyExpenses.length === 0 && <tr><td colSpan="5" className="text-center p-4 text-gray-500">Nenhum gasto este mês.</td></tr>}
                                 </tbody>
+                                {canBeCollapsed && (
+                                    <tfoot>
+                                        <tr>
+                                            <td colSpan="5" className="text-center pt-2">
+                                                <button onClick={() => toggleCardExpansion(card.id)} className="text-blue-400 hover:text-blue-300 text-sm font-semibold">
+                                                    {isExpanded ? 'Ver menos' : 'Ver mais...'}
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    </tfoot>
+                                )}
                             </table></div>
                         </div>
                     );
                 })}
             </div>
             <Modal isOpen={isCardModalOpen} onClose={closeCardModal} title={editingCard ? "Editar Cartão" : "Novo Cartão"}><div className="space-y-4" onKeyDown={handleCardModalKeyDown}><Input type="text" placeholder="Nome do Cartão" value={cardName} onChange={e => setCardName(e.target.value)} /><Button onClick={handleSaveCard} className="w-full">{editingCard ? "Guardar" : "Adicionar"}</Button></div></Modal>
-            <Modal isOpen={isExpenseModalOpen} onClose={closeExpenseModal} title="Adicionar Gasto"><div className="space-y-4" onKeyDown={handleExpenseModalKeyDown}>
+            <Modal isOpen={isExpenseModalOpen} onClose={closeExpenseModal} title={editingExpense ? "Editar Gasto" : "Adicionar Gasto"}><div className="space-y-4" onKeyDown={handleExpenseModalKeyDown}>
                 <Input type="text" placeholder="Descrição" value={expenseDescription} onChange={e => setExpenseDescription(e.target.value)} />
                 <Input type="number" placeholder="Valor da Parcela" value={expenseValue} onChange={e => setExpenseValue(e.target.value)} />
-                <div className="flex items-center gap-2"><input type="checkbox" checked={isInstallment} onChange={(e) => setIsInstallment(e.target.checked)} id="isInstallment" className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" /><label htmlFor="isInstallment" className="text-gray-300">Despesa Parcelada</label></div>
+                <div className="flex items-center gap-2"><input type="checkbox" checked={isInstallment} onChange={(e) => setIsInstallment(e.target.checked)} id="isInstallment" className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" disabled={!!editingExpense} /><label htmlFor="isInstallment" className="text-gray-300">Despesa Parcelada</label></div>
                 {isInstallment && (
                     <div className="grid grid-cols-2 gap-4">
-                        <Input type="number" placeholder="Parcela Atual" value={currentInstallment} onChange={e => setCurrentInstallment(e.target.value)} />
-                        <Input type="number" placeholder="Total de Parcelas" value={totalInstallments} onChange={e => setTotalInstallments(e.target.value)} />
+                        <Input type="number" placeholder="Parcela Atual" value={currentInstallment} onChange={e => setCurrentInstallment(e.target.value)} disabled={!!editingExpense} />
+                        <Input type="number" placeholder="Total de Parcelas" value={totalInstallments} onChange={e => setTotalInstallments(e.target.value)} disabled={!!editingExpense} />
                     </div>
                 )}
-                <label className="text-gray-400">Data da Primeira Parcela</label><Input type="date" value={expenseDate} onChange={e => setExpenseDate(e.target.value)} />
+                <label className="text-gray-400">Data da Primeira Parcela</label><Input type="date" value={expenseDate} onChange={e => setExpenseDate(e.target.value)} disabled={!!editingExpense} />
                 <div>
                     <label className="block text-gray-400 mb-2 text-sm">Tipo de Gasto</label>
                     <Select value={expenseType} onChange={e => setExpenseType(e.target.value)}>
@@ -715,7 +852,7 @@ const CardControl = ({ db, userId, showAlert, currentMonth }) => {
                         {CATEGORIES.map(cat => <option key={cat} value={cat}>{cat}</option>)}
                     </Select>
                 </div>
-                <Button onClick={handleSaveExpense} className="w-full">Adicionar</Button>
+                <Button onClick={handleSaveExpense} className="w-full">{editingExpense ? 'Guardar Alterações' : 'Adicionar'}</Button>
             </div></Modal>
         </div>
     );
