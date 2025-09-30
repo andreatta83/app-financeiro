@@ -1367,7 +1367,7 @@ const EventDetails = ({ eventId, db, userId, showAlert }) => {
     const balances = useMemo(() => {
         if (!eventData || !eventData.participants) return {};
         const balances = {};
-        eventData.participants.forEach(p => {
+        (eventData.participants || []).forEach(p => {
             balances[p.id] = { name: p.name, paid: 0, credit: p.credit || 0, owed: 0, balance: 0 };
         });
 
@@ -1394,46 +1394,60 @@ const EventDetails = ({ eventId, db, userId, showAlert }) => {
     }, [eventData]);
 
     const settlements = useMemo(() => {
-        const tempBalances = JSON.parse(JSON.stringify(balances));
-
-        const debtors = Object.entries(tempBalances).filter(([,b]) => b.balance < 0).map(([id, data]) => ({ id, name: data.name, amount: -data.balance }));
-        const creditors = Object.entries(tempBalances).filter(([,b]) => b.balance > 0).map(([id, data]) => ({ id, name: data.name, amount: data.balance }));
-
-        const transactions = [];
-        const creditSettlements = [];
-
-        debtors.sort((a,b) => b.amount - a.amount);
-        creditors.sort((a,b) => b.amount - a.amount);
-
-        let i = 0; // debtors index
-        let j = 0; // creditors index
-        
-        while(i < debtors.length && j < creditors.length) {
-            const debtor = debtors[i];
-            const creditor = creditors[j];
-            const amount = Math.min(debtor.amount, creditor.amount);
-
-            if (amount > 0.01) {
-                transactions.push({ from: debtor.name, to: creditor.name, amount });
-                debtor.amount -= amount;
-                creditor.amount -= amount;
+        if (!eventData || !eventData.participants || eventData.participants.length === 0) return { transactions: [], creditSettlements: [] };
+    
+        const finalBalances = {};
+        eventData.participants.forEach(p => {
+            finalBalances[p.id] = { name: p.name, paid: 0, credit: p.credit || 0, owed: 0, balance: 0 };
+        });
+        (eventData.expenses || []).forEach(expense => {
+            if (finalBalances[expense.paidById]) {
+                finalBalances[expense.paidById].paid += expense.amount;
             }
-
-            if(debtor.amount < 0.01) i++;
-            if(creditor.amount < 0.01) j++;
-        }
-        
-        Object.values(balances).forEach(b => {
-            if (b.balance < 0 && Math.abs(b.balance) < 0.01) { 
-                const settledAmount = b.owed - b.paid;
-                if (settledAmount > 0) {
-                    creditSettlements.push({ name: b.name, amount: settledAmount });
-                }
+            const involvedIds = expense.participantsIds || [];
+            if (involvedIds.length > 0) {
+                const share = expense.amount / involvedIds.length;
+                involvedIds.forEach(pId => {
+                    if(finalBalances[pId]) {
+                        finalBalances[pId].owed += share;
+                    }
+                });
             }
         });
-            
+        Object.values(finalBalances).forEach(b => {
+            b.balance = (b.paid + b.credit) - b.owed;
+        });
+    
+        const cashFlow = {};
+        Object.values(finalBalances).forEach(p => {
+            cashFlow[p.name] = p.paid - p.owed;
+        });
+    
+        const debtors = Object.entries(cashFlow).filter(([, amount]) => amount < -0.01).map(([name, amount]) => ({ name, amount: -amount }));
+        const creditors = Object.entries(cashFlow).filter(([, amount]) => amount > 0.01).map(([name, amount]) => ({ name, amount }));
+        const transactions = [];
+    
+        while (debtors.length > 0 && creditors.length > 0) {
+            const debtor = debtors[0];
+            const creditor = creditors[0];
+            const amount = Math.min(debtor.amount, creditor.amount);
+    
+            transactions.push({ from: debtor.name, to: creditor.name, amount });
+    
+            debtor.amount -= amount;
+            creditor.amount -= amount;
+    
+            if (debtor.amount < 0.01) debtors.shift();
+            if (creditor.amount < 0.01) creditors.shift();
+        }
+    
+        const creditSettlements = Object.values(finalBalances).filter(b => {
+            const cashDeficit = b.owed - b.paid;
+            return cashDeficit > 0.01 && b.balance >= -0.01;
+        }).map(b => ({ name: b.name }));
+    
         return { transactions, creditSettlements };
-    }, [balances]);
+    }, [eventData, balances]);
 
     if (!eventData) {
         return <div className="text-center py-16 bg-gray-800 rounded-b-2xl"><p className="text-gray-400">A carregar dados do evento...</p></div>;
@@ -1488,7 +1502,7 @@ const EventDetails = ({ eventId, db, userId, showAlert }) => {
                 <div className="bg-gray-800 rounded-2xl p-6">
                     <h3 className="text-xl font-bold text-white mb-4">Saldos</h3>
                     <ul className="space-y-2">
-                        {Object.values(balances).map(b => (
+                        {Object.values(balances).sort((a, b) => a.name.localeCompare(b.name)).map(b => (
                             <li key={b.name} className="flex justify-between items-center text-white p-2 rounded bg-gray-700/50">
                                 <span>{b.name}</span>
                                 <div className="text-right">
@@ -1504,7 +1518,7 @@ const EventDetails = ({ eventId, db, userId, showAlert }) => {
                 <div className="bg-gray-800 rounded-2xl p-6">
                     <h3 className="text-xl font-bold text-white mb-4">Participantes</h3>
                     <ul className="space-y-2">
-                        {(eventData.participants || []).map(p => (
+                        {(eventData.participants || []).sort((a,b) => a.name.localeCompare(b.name)).map(p => (
                             <li key={p.id} className="flex justify-between items-center text-white p-2 rounded bg-gray-700/50">
                                 <span>{p.name} <span className="text-xs text-gray-400">(Crédito: R$ {(p.credit || 0).toFixed(2)})</span></span>
                                 <div className="flex items-center gap-2">
