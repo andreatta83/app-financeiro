@@ -3,7 +3,7 @@ import { initializeApp } from 'firebase/app';
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'firebase/auth';
 import { getFirestore, doc, onSnapshot, setDoc, updateDoc, collection, query, addDoc, deleteDoc, getDoc, getDocs, writeBatch, orderBy } from 'firebase/firestore';
 import { getAnalytics } from "firebase/analytics";
-import { Landmark, CreditCard, TrendingUp, LayoutDashboard, Plus, Trash2, Edit, X, ArrowDown, ArrowUp, LogOut, KeyRound, Target, ChevronLeft, ChevronRight, Users, UtensilsCrossed, HandCoins, ArrowRightLeft, Filter } from 'lucide-react';
+import { Landmark, CreditCard, TrendingUp, LayoutDashboard, Plus, Trash2, Edit, X, ArrowDown, ArrowUp, LogOut, KeyRound, Target, ChevronLeft, ChevronRight, Users, UtensilsCrossed, HandCoins, ArrowRightLeft } from 'lucide-react';
 import { PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 
 
@@ -1262,6 +1262,7 @@ const EventDetails = ({ eventId, db, userId, showAlert }) => {
             await updateDoc(docRef, { participants: updatedParticipants });
             setIsParticipantModalOpen(false);
             setParticipantName('');
+            setParticipantCredit(0);
             setEditingParticipant(null);
         } catch (error) {
             showAlert("Erro", "Não foi possível guardar o participante.");
@@ -1364,9 +1365,9 @@ const EventDetails = ({ eventId, db, userId, showAlert }) => {
     };
 
     const balances = useMemo(() => {
-        if (!eventData) return {};
+        if (!eventData || !eventData.participants) return {};
         const balances = {};
-        (eventData.participants || []).forEach(p => {
+        eventData.participants.forEach(p => {
             balances[p.id] = { name: p.name, paid: 0, credit: p.credit || 0, owed: 0, balance: 0 };
         });
 
@@ -1374,9 +1375,10 @@ const EventDetails = ({ eventId, db, userId, showAlert }) => {
             if (balances[expense.paidById]) {
                 balances[expense.paidById].paid += expense.amount;
             }
-            if (expense.participantsIds.length > 0) {
-                const share = expense.amount / expense.participantsIds.length;
-                expense.participantsIds.forEach(pId => {
+            const involvedIds = expense.participantsIds || [];
+            if (involvedIds.length > 0) {
+                const share = expense.amount / involvedIds.length;
+                involvedIds.forEach(pId => {
                     if(balances[pId]) {
                         balances[pId].owed += share;
                     }
@@ -1391,22 +1393,27 @@ const EventDetails = ({ eventId, db, userId, showAlert }) => {
         return balances;
     }, [eventData]);
 
-    const transactions = useMemo(() => {
-        const balancesCopy = JSON.parse(JSON.stringify(balances));
-        const debtors = Object.entries(balancesCopy).filter(([,b]) => b.balance < 0).map(([id, data]) => ({ id, name: data.name, amount: -data.balance }));
-        const creditors = Object.entries(balancesCopy).filter(([,b]) => b.balance > 0).map(([id, data]) => ({ id, name: data.name, amount: data.balance }));
+    const settlements = useMemo(() => {
+        const tempBalances = JSON.parse(JSON.stringify(balances));
+
+        const debtors = Object.entries(tempBalances).filter(([,b]) => b.balance < 0).map(([id, data]) => ({ id, name: data.name, amount: -data.balance }));
+        const creditors = Object.entries(tempBalances).filter(([,b]) => b.balance > 0).map(([id, data]) => ({ id, name: data.name, amount: data.balance }));
+
         const transactions = [];
+        const creditSettlements = [];
 
-        debtors.sort((a,b) => a.amount - b.amount);
-        creditors.sort((a,b) => a.amount - b.amount);
+        debtors.sort((a,b) => b.amount - a.amount);
+        creditors.sort((a,b) => b.amount - a.amount);
 
-        let i = 0, j = 0;
+        let i = 0; // debtors index
+        let j = 0; // creditors index
+        
         while(i < debtors.length && j < creditors.length) {
             const debtor = debtors[i];
             const creditor = creditors[j];
             const amount = Math.min(debtor.amount, creditor.amount);
 
-            if (amount > 0.01) { // Avoid tiny transactions
+            if (amount > 0.01) {
                 transactions.push({ from: debtor.name, to: creditor.name, amount });
                 debtor.amount -= amount;
                 creditor.amount -= amount;
@@ -1415,8 +1422,17 @@ const EventDetails = ({ eventId, db, userId, showAlert }) => {
             if(debtor.amount < 0.01) i++;
             if(creditor.amount < 0.01) j++;
         }
-        return transactions;
-
+        
+        Object.values(balances).forEach(b => {
+            if (b.balance < 0 && Math.abs(b.balance) < 0.01) { 
+                const settledAmount = b.owed - b.paid;
+                if (settledAmount > 0) {
+                    creditSettlements.push({ name: b.name, amount: settledAmount });
+                }
+            }
+        });
+            
+        return { transactions, creditSettlements };
     }, [balances]);
 
     if (!eventData) {
@@ -1444,16 +1460,22 @@ const EventDetails = ({ eventId, db, userId, showAlert }) => {
 
             <div className="bg-gray-800 rounded-2xl p-6">
                 <h3 className="text-xl font-bold text-white mb-4 flex items-center gap-2"><ArrowRightLeft size={20} />Acerto de Contas</h3>
-                {transactions.length > 0 ? (
+                {(settlements.transactions.length > 0 || settlements.creditSettlements.length > 0) ? (
                      <ul className="space-y-3">
-                         {transactions.map((t, index) => (
-                             <li key={index} className="flex items-center justify-between bg-gray-700 p-3 rounded-lg">
+                         {settlements.transactions.map((t, index) => (
+                             <li key={`trans-${index}`} className="flex items-center justify-between bg-gray-700 p-3 rounded-lg">
                                  <div className="flex items-center gap-3">
                                      <span className="font-semibold text-red-400">{t.from}</span>
                                      <ArrowRightLeft size={16} className="text-gray-400" />
                                      <span className="font-semibold text-green-400">{t.to}</span>
                                  </div>
                                  <span className="font-bold text-lg">R$ {t.amount.toFixed(2)}</span>
+                             </li>
+                         ))}
+                         {settlements.creditSettlements.map((cs, index) => (
+                             <li key={`credit-${index}`} className="flex items-center justify-between bg-gray-700/50 p-3 rounded-lg">
+                                <span className="font-semibold text-gray-300">{cs.name}</span>
+                                <span className="text-sm font-semibold text-blue-400">OK - (descontado do crédito)</span>
                              </li>
                          ))}
                      </ul>
@@ -1473,7 +1495,7 @@ const EventDetails = ({ eventId, db, userId, showAlert }) => {
                                     <span className={`font-bold text-lg ${b.balance >= 0.01 ? 'text-green-400' : b.balance <= -0.01 ? 'text-red-400' : 'text-gray-300'}`}>
                                         {b.balance >= 0 ? '+' : '-'} R$ {Math.abs(b.balance).toFixed(2)}
                                     </span>
-                                    <div className="text-xs text-gray-400">Crédito Total R$ {(b.paid + b.credit).toFixed(2)} / Devia R$ {b.owed.toFixed(2)}</div>
+                                    <div className="text-xs text-gray-400">Contribuiu R$ {(b.paid + b.credit).toFixed(2)} / Custo R$ {b.owed.toFixed(2)}</div>
                                 </div>
                             </li>
                         ))}
