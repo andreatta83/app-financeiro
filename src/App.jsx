@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'firebase/auth';
-import { getFirestore, doc, onSnapshot, setDoc, updateDoc, collection, query, addDoc, deleteDoc, getDoc, getDocs, writeBatch } from 'firebase/firestore';
+import { getFirestore, doc, onSnapshot, setDoc, updateDoc, collection, query, addDoc, deleteDoc, getDoc, getDocs, writeBatch, orderBy } from 'firebase/firestore';
 import { getAnalytics } from "firebase/analytics";
-import { Landmark, CreditCard, TrendingUp, LayoutDashboard, Plus, Trash2, Edit, X, ArrowDown, ArrowUp, LogOut, KeyRound, Target, ChevronLeft, ChevronRight, Users, UtensilsCrossed, HandCoins, ArrowRightLeft } from 'lucide-react';
+import { Landmark, CreditCard, TrendingUp, LayoutDashboard, Plus, Trash2, Edit, X, ArrowDown, ArrowUp, LogOut, KeyRound, Target, ChevronLeft, ChevronRight, Users, UtensilsCrossed, HandCoins, ArrowRightLeft, Filter } from 'lucide-react';
 import { PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 
 
@@ -628,7 +628,6 @@ const CardControl = ({ db, userId, showAlert, currentMonth }) => {
         if (isNaN(value)) return;
 
         if (editingExpense) {
-            // Primeiro apaga a despesa antiga (ou todas as parcelas)
             if (editingExpense.isInstallment) {
                 await performDeleteInstallment(currentCardId, editingExpense.installmentId, false);
             } else {
@@ -1197,11 +1196,12 @@ const Dashboard = ({ db, userId, showAlert, currentMonth }) => {
 
 // --- NOVA ABA: CONFRA ACDC (Tricount Clone) ---
 
-const ConfrariaACDC = ({ db, userId, showAlert }) => {
-    const [eventData, setEventData] = useState({ participants: [], expenses: [] });
+const EventDetails = ({ eventId, db, userId, showAlert }) => {
+    const [eventData, setEventData] = useState(null);
     const [isParticipantModalOpen, setIsParticipantModalOpen] = useState(false);
     const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false);
     const [participantName, setParticipantName] = useState('');
+    const [participantCredit, setParticipantCredit] = useState(0);
     const [editingParticipant, setEditingParticipant] = useState(null);
     
     const [expenseDescription, setExpenseDescription] = useState('');
@@ -1214,42 +1214,52 @@ const ConfrariaACDC = ({ db, userId, showAlert }) => {
     const [actionToConfirm, setActionToConfirm] = useState(null);
 
     const docRef = useMemo(() => {
-        if (!userId) return null;
-        return doc(db, 'artifacts', appId, 'users', userId, 'confrariaEvents', 'mainEvent');
-    }, [userId]);
+        if (!userId || !eventId) return null;
+        return doc(db, 'artifacts', appId, 'users', userId, 'confrariaEvents', eventId);
+    }, [userId, eventId]);
 
     useEffect(() => {
-        if (!docRef) return;
+        if (!docRef) {
+            setEventData(null);
+            return;
+        };
         const unsubscribe = onSnapshot(docRef, (docSnap) => {
-            setEventData(docSnap.exists() ? docSnap.data() : { participants: [], expenses: [] });
+            if (docSnap.exists()) {
+                setEventData(docSnap.data());
+            } else {
+                setEventData(null); 
+            }
         }, (error) => {
-            console.error("Erro no listener do Firestore (Confraria): ", error);
-            showAlert("Erro de Leitura", "Não foi possível carregar os dados do evento.");
+            console.error(`Erro ao carregar evento ${eventId}:`, error);
+            showAlert("Erro de Leitura", "Não foi possível carregar os dados do evento selecionado.");
         });
         return () => unsubscribe();
     }, [docRef]);
 
+    
     const openParticipantModal = (participant = null) => {
         setEditingParticipant(participant);
         setParticipantName(participant ? participant.name : '');
+        setParticipantCredit(participant ? participant.credit || 0 : 0);
         setIsParticipantModalOpen(true);
     };
 
     const handleSaveParticipant = async () => {
-        if (!participantName.trim()) return;
+        if (!participantName.trim() || !eventData) return;
         
         let updatedParticipants;
+        const credit = parseFloat(participantCredit) || 0;
         if (editingParticipant) {
             updatedParticipants = eventData.participants.map(p => 
-                p.id === editingParticipant.id ? { ...p, name: participantName.trim() } : p
+                p.id === editingParticipant.id ? { ...p, name: participantName.trim(), credit } : p
             );
         } else {
-            const newParticipant = { id: Date.now().toString(), name: participantName.trim() };
-            updatedParticipants = [...eventData.participants, newParticipant];
+            const newParticipant = { id: Date.now().toString(), name: participantName.trim(), credit };
+            updatedParticipants = [...(eventData.participants || []), newParticipant];
         }
 
         try {
-            await setDoc(docRef, { ...eventData, participants: updatedParticipants }, { merge: true });
+            await updateDoc(docRef, { participants: updatedParticipants });
             setIsParticipantModalOpen(false);
             setParticipantName('');
             setEditingParticipant(null);
@@ -1259,7 +1269,8 @@ const ConfrariaACDC = ({ db, userId, showAlert }) => {
     };
 
     const requestDeleteParticipant = (participantId) => {
-        const isParticipantInvolved = eventData.expenses.some(e => e.paidById === participantId || e.participantsIds.includes(participantId));
+        if (!eventData) return;
+        const isParticipantInvolved = (eventData.expenses || []).some(e => e.paidById === participantId || e.participantsIds.includes(participantId));
         if (isParticipantInvolved) {
             showAlert("Ação Bloqueada", "Não é possível excluir um participante que está envolvido em despesas. Remova-o das despesas primeiro.");
             return;
@@ -1269,9 +1280,10 @@ const ConfrariaACDC = ({ db, userId, showAlert }) => {
     };
 
     const performDeleteParticipant = async (participantId) => {
+        if (!eventData) return;
         const updatedParticipants = eventData.participants.filter(p => p.id !== participantId);
         try {
-            await setDoc(docRef, { ...eventData, participants: updatedParticipants }, { merge: true });
+            await updateDoc(docRef, { participants: updatedParticipants });
             setIsConfirmOpen(false);
         } catch (error) {
              showAlert("Erro", "Não foi possível excluir o participante.");
@@ -1282,11 +1294,11 @@ const ConfrariaACDC = ({ db, userId, showAlert }) => {
         setEditingExpense(expense);
         setExpenseDescription(expense ? expense.description : '');
         setExpenseAmount(expense ? expense.amount : '');
-        setPaidById(expense ? expense.paidById : eventData.participants[0]?.id || '');
+        setPaidById(expense ? expense.paidById : (eventData.participants && eventData.participants[0]?.id) || '');
         
         const involved = expense 
             ? expense.participantsIds.reduce((acc, id) => ({ ...acc, [id]: true }), {})
-            : eventData.participants.reduce((acc, p) => ({ ...acc, [p.id]: true }), {});
+            : (eventData.participants || []).reduce((acc, p) => ({ ...acc, [p.id]: true }), {});
         setInvolvedParticipants(involved);
         
         setIsExpenseModalOpen(true);
@@ -1294,7 +1306,7 @@ const ConfrariaACDC = ({ db, userId, showAlert }) => {
     
     const handleSaveExpense = async () => {
         const amount = parseFloat(expenseAmount);
-        if (!expenseDescription.trim() || isNaN(amount) || amount <= 0 || !paidById) return;
+        if (!expenseDescription.trim() || isNaN(amount) || amount <= 0 || !paidById || !eventData) return;
         
         const involvedIds = Object.keys(involvedParticipants).filter(id => involvedParticipants[id]);
         if (involvedIds.length === 0) {
@@ -1323,11 +1335,11 @@ const ConfrariaACDC = ({ db, userId, showAlert }) => {
                 paidByName,
                 participantsIds: involvedIds
             };
-            updatedExpenses = [...eventData.expenses, newExpense];
+            updatedExpenses = [...(eventData.expenses || []), newExpense];
         }
 
         try {
-            await setDoc(docRef, { ...eventData, expenses: updatedExpenses }, { merge: true });
+            await updateDoc(docRef, { expenses: updatedExpenses });
             setIsExpenseModalOpen(false);
             setEditingExpense(null);
         } catch(error) {
@@ -1341,9 +1353,10 @@ const ConfrariaACDC = ({ db, userId, showAlert }) => {
     };
 
     const performDeleteExpense = async (expenseId) => {
+        if (!eventData) return;
         const updatedExpenses = eventData.expenses.filter(e => e.id !== expenseId);
         try {
-            await setDoc(docRef, { ...eventData, expenses: updatedExpenses }, { merge: true });
+            await updateDoc(docRef, { expenses: updatedExpenses });
             setIsConfirmOpen(false);
         } catch(error) {
             showAlert("Erro", "Não foi possível excluir a despesa.");
@@ -1351,12 +1364,13 @@ const ConfrariaACDC = ({ db, userId, showAlert }) => {
     };
 
     const balances = useMemo(() => {
+        if (!eventData) return {};
         const balances = {};
-        eventData.participants.forEach(p => {
-            balances[p.id] = { name: p.name, paid: 0, owed: 0, balance: 0 };
+        (eventData.participants || []).forEach(p => {
+            balances[p.id] = { name: p.name, paid: 0, credit: p.credit || 0, owed: 0, balance: 0 };
         });
 
-        eventData.expenses.forEach(expense => {
+        (eventData.expenses || []).forEach(expense => {
             if (balances[expense.paidById]) {
                 balances[expense.paidById].paid += expense.amount;
             }
@@ -1371,7 +1385,7 @@ const ConfrariaACDC = ({ db, userId, showAlert }) => {
         });
 
         Object.values(balances).forEach(b => {
-            b.balance = b.paid - b.owed;
+            b.balance = (b.paid + b.credit) - b.owed;
         });
         
         return balances;
@@ -1405,27 +1419,29 @@ const ConfrariaACDC = ({ db, userId, showAlert }) => {
 
     }, [balances]);
 
-    const totalSpent = eventData.expenses.reduce((sum, e) => sum + e.amount, 0);
+    if (!eventData) {
+        return <div className="text-center py-16 bg-gray-800 rounded-b-2xl"><p className="text-gray-400">A carregar dados do evento...</p></div>;
+    }
+
+    const totalSpent = (eventData.expenses || []).reduce((sum, e) => sum + e.amount, 0);
 
     return (
-        <div className="space-y-8">
+        <div className="space-y-8 bg-gray-800/50 p-6 rounded-b-2xl">
              <ConfirmModal isOpen={isConfirmOpen} onClose={() => setIsConfirmOpen(false)} onConfirm={actionToConfirm} message="Tem a certeza que deseja excluir este item?"/>
-            <h2 className="text-3xl font-bold text-white">Divisão de Contas - Confra ACDC</h2>
+            <h2 className="text-3xl font-bold text-white">{eventData.name} - {new Date(eventData.date + 'T00:00:00').toLocaleDateString('pt-BR')}</h2>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                  <StatCard title="Total Gasto" value={`R$ ${totalSpent.toFixed(2)}`} icon={<UtensilsCrossed size={24} />} color="bg-orange-500/30 text-orange-400" />
-                 <StatCard title="Participantes" value={eventData.participants.length} icon={<Users size={24} />} color="bg-blue-500/30 text-blue-400" />
-                 <StatCard title="Nº de Despesas" value={eventData.expenses.length} icon={<HandCoins size={24} />} color="bg-green-500/30 text-green-400" />
+                 <StatCard title="Participantes" value={(eventData.participants || []).length} icon={<Users size={24} />} color="bg-blue-500/30 text-blue-400" />
+                 <StatCard title="Nº de Despesas" value={(eventData.expenses || []).length} icon={<HandCoins size={24} />} color="bg-green-500/30 text-green-400" />
             </div>
 
-            {/* Ações */}
             <div className="flex gap-4">
                 <Button onClick={() => openParticipantModal()} className="flex-1"><Users size={16} /> Adicionar Participante</Button>
-                <Button onClick={() => openExpenseModal()} className="flex-1" variant="secondary" disabled={eventData.participants.length === 0}>
+                <Button onClick={() => openExpenseModal()} className="flex-1" variant="secondary" disabled={(eventData.participants || []).length === 0}>
                     <Plus size={16} /> Adicionar Despesa
                 </Button>
             </div>
 
-            {/* Acerto de Contas */}
             <div className="bg-gray-800 rounded-2xl p-6">
                 <h3 className="text-xl font-bold text-white mb-4 flex items-center gap-2"><ArrowRightLeft size={20} />Acerto de Contas</h3>
                 {transactions.length > 0 ? (
@@ -1446,10 +1462,8 @@ const ConfrariaACDC = ({ db, userId, showAlert }) => {
                 )}
             </div>
 
-            {/* Detalhes (Saldos, Despesas, Participantes) */}
              <div className="grid lg:grid-cols-3 gap-8">
-                {/* Saldos Individuais */}
-                <div className="bg-gray-800 rounded-2xl p-6 lg:col-span-1">
+                <div className="bg-gray-800 rounded-2xl p-6">
                     <h3 className="text-xl font-bold text-white mb-4">Saldos</h3>
                     <ul className="space-y-2">
                         {Object.values(balances).map(b => (
@@ -1459,46 +1473,43 @@ const ConfrariaACDC = ({ db, userId, showAlert }) => {
                                     <span className={`font-bold text-lg ${b.balance >= 0.01 ? 'text-green-400' : b.balance <= -0.01 ? 'text-red-400' : 'text-gray-300'}`}>
                                         {b.balance >= 0 ? '+' : '-'} R$ {Math.abs(b.balance).toFixed(2)}
                                     </span>
-                                    <div className="text-xs text-gray-400">Pagou R$ {b.paid.toFixed(2)} / Devia R$ {b.owed.toFixed(2)}</div>
+                                    <div className="text-xs text-gray-400">Crédito Total R$ {(b.paid + b.credit).toFixed(2)} / Devia R$ {b.owed.toFixed(2)}</div>
                                 </div>
                             </li>
                         ))}
                     </ul>
                 </div>
-                 {/* Lista de Despesas e Participantes */}
-                <div className="bg-gray-800 rounded-2xl p-6 lg:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-8">
-                    <div>
-                        <h3 className="text-xl font-bold text-white mb-4">Despesas</h3>
-                        <ul className="space-y-2">
-                            {eventData.expenses.map(e => (
-                                <li key={e.id} className="flex justify-between items-center text-white p-2 rounded bg-gray-700/50">
-                                    <div>
-                                        <span>{e.description}</span>
-                                        <p className="text-xs text-gray-400">Pago por: {e.paidByName}</p>
-                                    </div>
-                                    <div className="flex items-center gap-2">
-                                        <span className="font-bold">R$ {e.amount.toFixed(2)}</span>
-                                        <button onClick={() => openExpenseModal(e)} className="text-blue-400 hover:text-blue-300"><Edit size={16} /></button>
-                                        <button onClick={() => requestDeleteExpense(e.id)} className="text-red-400 hover:text-red-300"><Trash2 size={16} /></button>
-                                    </div>
-                                </li>
-                            ))}
-                        </ul>
-                    </div>
-                     <div>
-                        <h3 className="text-xl font-bold text-white mb-4">Participantes</h3>
-                        <ul className="space-y-2">
-                            {eventData.participants.map(p => (
-                                <li key={p.id} className="flex justify-between items-center text-white p-2 rounded bg-gray-700/50">
-                                    <span>{p.name}</span>
-                                    <div className="flex items-center gap-2">
-                                        <button onClick={() => openParticipantModal(p)} className="text-blue-400 hover:text-blue-300"><Edit size={16} /></button>
-                                        <button onClick={() => requestDeleteParticipant(p.id)} className="text-red-400 hover:text-red-300"><Trash2 size={16} /></button>
-                                    </div>
-                                </li>
-                            ))}
-                        </ul>
-                    </div>
+                <div className="bg-gray-800 rounded-2xl p-6">
+                    <h3 className="text-xl font-bold text-white mb-4">Participantes</h3>
+                    <ul className="space-y-2">
+                        {(eventData.participants || []).map(p => (
+                            <li key={p.id} className="flex justify-between items-center text-white p-2 rounded bg-gray-700/50">
+                                <span>{p.name} <span className="text-xs text-gray-400">(Crédito: R$ {(p.credit || 0).toFixed(2)})</span></span>
+                                <div className="flex items-center gap-2">
+                                    <button onClick={() => openParticipantModal(p)} className="text-blue-400 hover:text-blue-300"><Edit size={16} /></button>
+                                    <button onClick={() => requestDeleteParticipant(p.id)} className="text-red-400 hover:text-red-300"><Trash2 size={16} /></button>
+                                </div>
+                            </li>
+                        ))}
+                    </ul>
+                </div>
+                <div className="bg-gray-800 rounded-2xl p-6">
+                    <h3 className="text-xl font-bold text-white mb-4">Despesas</h3>
+                    <ul className="space-y-2">
+                        {(eventData.expenses || []).map(e => (
+                            <li key={e.id} className="flex justify-between items-center text-white p-2 rounded bg-gray-700/50">
+                                <div>
+                                    <span>{e.description}</span>
+                                    <p className="text-xs text-gray-400">Pago por: {e.paidByName}</p>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <span className="font-bold">R$ {e.amount.toFixed(2)}</span>
+                                    <button onClick={() => openExpenseModal(e)} className="text-blue-400 hover:text-blue-300"><Edit size={16} /></button>
+                                    <button onClick={() => requestDeleteExpense(e.id)} className="text-red-400 hover:text-red-300"><Trash2 size={16} /></button>
+                                </div>
+                            </li>
+                        ))}
+                    </ul>
                 </div>
             </div>
 
@@ -1506,6 +1517,7 @@ const ConfrariaACDC = ({ db, userId, showAlert }) => {
             <Modal isOpen={isParticipantModalOpen} onClose={() => { setIsParticipantModalOpen(false); setEditingParticipant(null); }} title={editingParticipant ? "Editar Participante" : "Adicionar Participante"}>
                 <div className="space-y-4" onKeyDown={e => e.key === 'Enter' && handleSaveParticipant()}>
                     <Input type="text" placeholder="Nome do participante" value={participantName} onChange={e => setParticipantName(e.target.value)} />
+                    <Input type="number" placeholder="Saldo Inicial / Crédito (Ex: 100.00)" value={participantCredit} onChange={e => setParticipantCredit(e.target.value)} />
                     <Button onClick={handleSaveParticipant} className="w-full">{editingParticipant ? "Guardar" : "Adicionar"}</Button>
                 </div>
             </Modal>
@@ -1516,13 +1528,13 @@ const ConfrariaACDC = ({ db, userId, showAlert }) => {
                      <div>
                         <label className="block text-gray-400 mb-2 text-sm">Quem pagou?</label>
                         <Select value={paidById} onChange={e => setPaidById(e.target.value)}>
-                            {eventData.participants.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                            {(eventData.participants || []).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                         </Select>
                     </div>
                      <div>
                         <label className="block text-gray-400 mb-2 text-sm">Para quem é esta despesa?</label>
                         <div className="space-y-2 p-3 bg-gray-900 rounded-lg max-h-40 overflow-y-auto">
-                            {eventData.participants.map(p => (
+                            {(eventData.participants || []).map(p => (
                                 <div key={p.id} className="flex items-center">
                                     <input 
                                         type="checkbox" 
@@ -1537,6 +1549,156 @@ const ConfrariaACDC = ({ db, userId, showAlert }) => {
                         </div>
                     </div>
                     <Button onClick={handleSaveExpense} className="w-full">{editingExpense ? "Guardar Alterações" : "Adicionar Despesa"}</Button>
+                </div>
+            </Modal>
+        </div>
+    );
+};
+
+const ConfrariaACDC = ({ db, userId, showAlert }) => {
+    const [events, setEvents] = useState([]);
+    const [selectedEventId, setSelectedEventId] = useState('');
+    const [loading, setLoading] = useState(true);
+
+    const [isNewEventModalOpen, setIsNewEventModalOpen] = useState(false);
+    const [newEventName, setNewEventName] = useState('');
+    const [newEventDate, setNewEventDate] = useState(new Date().toISOString().slice(0, 10));
+
+    const [isConfirmDeleteOpen, setIsConfirmDeleteOpen] = useState(false);
+    const [eventToDelete, setEventToDelete] = useState(null);
+
+    const eventsCollectionRef = useMemo(() => {
+        if (!userId) return null;
+        return collection(db, 'artifacts', appId, 'users', userId, 'confrariaEvents');
+    }, [userId]);
+
+    useEffect(() => {
+        if (!eventsCollectionRef) return;
+        const q = query(eventsCollectionRef, orderBy("date", "desc"));
+        const unsubscribe = onSnapshot(q, (snapshot) => {
+            const eventList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            setEvents(eventList);
+            setSelectedEventId(currentSelectedId => {
+                if ((!currentSelectedId || !eventList.some(e => e.id === currentSelectedId)) && eventList.length > 0) {
+                    return eventList[0].id;
+                }
+                if (eventList.length === 0) {
+                    return '';
+                }
+                return currentSelectedId;
+            });
+            setLoading(false);
+        });
+        return unsubscribe;
+    }, [eventsCollectionRef]);
+    
+    const handleSaveNewEvent = async () => {
+        if (!newEventName.trim() || !newEventDate) {
+            showAlert("Erro", "Por favor, preencha o nome e a data do evento.");
+            return;
+        }
+        try {
+            const newEventDoc = await addDoc(eventsCollectionRef, {
+                name: newEventName,
+                date: newEventDate,
+                participants: [],
+                expenses: []
+            });
+            setSelectedEventId(newEventDoc.id);
+            setIsNewEventModalOpen(false);
+            setNewEventName('');
+            setNewEventDate(new Date().toISOString().slice(0, 10));
+        } catch (error) {
+            console.error("Erro ao criar evento: ", error);
+            showAlert("Erro", "Não foi possível criar o evento.");
+        }
+    };
+    
+    const requestDeleteEvent = (eventId, eventName) => {
+        setEventToDelete({ id: eventId, name: eventName });
+        setIsConfirmDeleteOpen(true);
+    };
+    
+    const performDeleteEvent = async () => {
+        if (!eventToDelete) return;
+        try {
+            await deleteDoc(doc(db, 'artifacts', appId, 'users', userId, 'confrariaEvents', eventToDelete.id));
+            setIsConfirmDeleteOpen(false);
+            setEventToDelete(null);
+        } catch (error) {
+            console.error("Erro ao excluir evento:", error);
+            showAlert("Erro", "Não foi possível excluir o evento.");
+        }
+    };
+
+    if (loading) {
+        return <div className="flex justify-center items-center h-64"><div className="animate-spin rounded-full h-16 w-16 border-t-2 border-b-2 border-blue-500"></div></div>;
+    }
+    
+    return (
+        <div className="space-y-0">
+            <ConfirmModal 
+                isOpen={isConfirmDeleteOpen} 
+                onClose={() => setIsConfirmDeleteOpen(false)} 
+                onConfirm={performDeleteEvent} 
+                title="Excluir Evento"
+                message={`Tem a certeza que deseja excluir o evento "${eventToDelete?.name}"? Esta ação é irreversível.`}
+            />
+            
+            <div className="bg-gray-800 rounded-t-2xl p-2 flex items-center border-b border-gray-700 overflow-x-auto">
+                {events.map(event => (
+                    <div 
+                        key={event.id}
+                        onClick={() => setSelectedEventId(event.id)}
+                        className={`cursor-pointer flex items-center gap-2 whitespace-nowrap px-4 py-2 rounded-md text-sm font-semibold transition ${selectedEventId === event.id ? 'bg-blue-600 text-white' : 'text-gray-300 hover:bg-gray-700'}`}
+                        role="button"
+                        tabIndex={0}
+                        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setSelectedEventId(event.id); }}
+                    >
+                        <span>{event.name}</span>
+                        <button 
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                requestDeleteEvent(event.id, event.name);
+                            }}
+                            className="p-1 rounded-full hover:bg-red-500/50"
+                            aria-label={`Excluir evento ${event.name}`}
+                        >
+                            <X size={14}/>
+                        </button>
+                    </div>
+                ))}
+                
+                <button 
+                    onClick={() => setIsNewEventModalOpen(true)}
+                    className="ml-2 flex-shrink-0 flex items-center justify-center p-2 rounded-full bg-gray-700 hover:bg-blue-600 text-white transition"
+                    title="Criar Novo Evento"
+                >
+                    <Plus size={16} />
+                </button>
+            </div>
+
+            {selectedEventId ? (
+                <EventDetails 
+                    key={selectedEventId}
+                    eventId={selectedEventId} 
+                    db={db} 
+                    userId={userId} 
+                    showAlert={showAlert} 
+                />
+            ) : (
+                <div className="text-center py-16 bg-gray-800 rounded-b-2xl">
+                    <Users size={48} className="mx-auto text-gray-500" />
+                    <p className="mt-4 text-gray-400">Nenhum evento criado.</p>
+                    <p className="text-gray-500 text-sm">Crie um novo evento para começar.</p>
+                </div>
+            )}
+            
+            <Modal isOpen={isNewEventModalOpen} onClose={() => setIsNewEventModalOpen(false)} title="Criar Novo Evento">
+                <div className="space-y-4">
+                    <Input type="text" placeholder="Nome do Evento" value={newEventName} onChange={e => setNewEventName(e.target.value)} />
+                    <Input type="date" value={newEventDate} onChange={e => setNewEventDate(e.target.value)} />
+                    <Button onClick={handleSaveNewEvent} className="w-full">Criar Evento</Button>
                 </div>
             </Modal>
         </div>
