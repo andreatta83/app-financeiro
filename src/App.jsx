@@ -3,7 +3,7 @@ import { initializeApp } from 'firebase/app';
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'firebase/auth';
 import { getFirestore, doc, onSnapshot, setDoc, updateDoc, collection, query, addDoc, deleteDoc, getDoc, getDocs, writeBatch, orderBy } from 'firebase/firestore';
 import { getAnalytics } from "firebase/analytics";
-import { Landmark, CreditCard, TrendingUp, LayoutDashboard, Plus, Trash2, Edit, X, ArrowDown, ArrowUp, LogOut, KeyRound, Target, ChevronLeft, ChevronRight, Users, UtensilsCrossed, HandCoins, ArrowRightLeft } from 'lucide-react';
+import { Landmark, CreditCard, TrendingUp, LayoutDashboard, Plus, Trash2, Edit, X, ArrowDown, ArrowUp, LogOut, KeyRound, Target, ChevronLeft, ChevronRight, Users, UtensilsCrossed, HandCoins, ArrowRightLeft, Filter } from 'lucide-react';
 import { PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 
 
@@ -703,77 +703,80 @@ const CardControl = ({ db, userId, showAlert, currentMonth }) => {
 
     const performDeleteSingleExpense = async (cardId, expenseId, closeModal = true) => {
         const batch = writeBatch(db);
-        const card = cards.find(c => c.id === cardId);
-        if (!card) return;
-
-        const expenseToDelete = (card.expenses || []).find(e => e.id === expenseId);
-        if (!expenseToDelete) return;
-
-        const updatedCardExpenses = (card.expenses || []).filter(e => e.id !== expenseId);
-        const cardDocRef = doc(cardsCollectionRef, cardId);
-        batch.update(cardDocRef, { expenses: updatedCardExpenses });
-
-        const month = expenseToDelete.date.slice(0, 7);
-        const type = expenseToDelete.type;
-        const monthlyDocRef = doc(db, 'artifacts', appId, 'users', userId, 'monthlyData', month);
-        const monthlyDocSnap = await getDoc(monthlyDocRef);
-
-        if (monthlyDocSnap.exists()) {
-            const monthlyData = monthlyDocSnap.data();
-            const typeExpenses = monthlyData.expenses[type] || [];
-            const updatedTypeExpenses = typeExpenses.filter(exp => exp.id !== expenseId);
-            const updatedMonthlyExpenses = { ...monthlyData.expenses, [type]: updatedTypeExpenses };
-            batch.set(monthlyDocRef, { expenses: updatedMonthlyExpenses }, { merge: true });
-        }
-        
         try {
+            const card = cards.find(c => c.id === cardId);
+            if (!card) throw new Error("Card not found in local state");
+
+            const expenseToDelete = (card.expenses || []).find(e => e.id === expenseId);
+            if (!expenseToDelete) throw new Error("Expense not found in local state");
+
+            const updatedCardExpenses = (card.expenses || []).filter(e => e.id !== expenseId);
+            const cardDocRef = doc(cardsCollectionRef, cardId);
+            batch.update(cardDocRef, { expenses: updatedCardExpenses });
+
+            const month = expenseToDelete.date.slice(0, 7);
+            const type = expenseToDelete.type;
+            const monthlyDocRef = doc(db, 'artifacts', appId, 'users', userId, 'monthlyData', month);
+            const monthlyDocSnap = await getDoc(monthlyDocRef);
+
+            if (monthlyDocSnap.exists()) {
+                const monthlyData = monthlyDocSnap.data();
+                if (monthlyData.expenses && monthlyData.expenses[type]) {
+                    const updatedTypeExpenses = monthlyData.expenses[type].filter(exp => exp.id !== expenseId);
+                    const updatedMonthlyExpenses = { ...monthlyData.expenses, [type]: updatedTypeExpenses };
+                    batch.update(monthlyDocRef, { expenses: updatedMonthlyExpenses });
+                }
+            }
+            
             await batch.commit();
             if (closeModal) setIsConfirmOpen(false);
         } catch(error) {
             console.error("Erro ao apagar despesa:", error);
-            showAlert("Erro ao Apagar", `Não foi possível apagar a despesa.\n\nErro: ${error.code}`);
+            showAlert("Erro ao Apagar", `Não foi possível apagar a despesa.\n\nErro: ${error.message}`);
+            if(closeModal) setIsConfirmOpen(false);
         }
     };
     
     const performDeleteInstallment = async (cardId, installmentId, closeModal = true) => {
         if (!installmentId) return;
         const batch = writeBatch(db);
-        const card = cards.find(c => c.id === cardId);
-        if(!card) return;
+        try {
+            const card = cards.find(c => c.id === cardId);
+            if(!card) throw new Error("Card not found in local state");
 
-        const expensesToDelete = (card.expenses || []).filter(e => e.installmentId === installmentId);
-        const updatedCardExpenses = (card.expenses || []).filter(e => e.installmentId !== installmentId);
-        
-        const cardDocRef = doc(cardsCollectionRef, cardId);
-        batch.update(cardDocRef, { expenses: updatedCardExpenses });
+            const expensesToDelete = (card.expenses || []).filter(e => e.installmentId === installmentId);
+            const updatedCardExpenses = (card.expenses || []).filter(e => e.installmentId !== installmentId);
+            
+            const cardDocRef = doc(cardsCollectionRef, cardId);
+            batch.update(cardDocRef, { expenses: updatedCardExpenses });
 
-        const monthlyDocsToUpdate = {};
-        for (const expense of expensesToDelete) {
-            const month = expense.date.slice(0, 7);
-            if (!monthlyDocsToUpdate[month]) {
-                const docRef = doc(db, 'artifacts', appId, 'users', userId, 'monthlyData', month);
-                const docSnap = await getDoc(docRef);
-                if (docSnap.exists()) {
-                    monthlyDocsToUpdate[month] = docSnap.data();
+            const monthlyDocsToUpdate = {};
+            for (const expense of expensesToDelete) {
+                const month = expense.date.slice(0, 7);
+                if (!monthlyDocsToUpdate[month]) {
+                    const docRef = doc(db, 'artifacts', appId, 'users', userId, 'monthlyData', month);
+                    const docSnap = await getDoc(docRef);
+                    if (docSnap.exists()) {
+                        monthlyDocsToUpdate[month] = docSnap.data();
+                    }
                 }
             }
-        }
 
-        Object.entries(monthlyDocsToUpdate).forEach(([month, data]) => {
-            const updatedExpenses = { ...data.expenses };
-            Object.keys(updatedExpenses).forEach(type => {
-                updatedExpenses[type] = (updatedExpenses[type] || []).filter(exp => exp.installmentId !== installmentId);
+            Object.entries(monthlyDocsToUpdate).forEach(([month, data]) => {
+                const updatedExpenses = { ...data.expenses };
+                Object.keys(updatedExpenses).forEach(type => {
+                    updatedExpenses[type] = (updatedExpenses[type] || []).filter(exp => exp.installmentId !== installmentId);
+                });
+                const docRef = doc(db, 'artifacts', appId, 'users', userId, 'monthlyData', month);
+                batch.update(docRef, { expenses: updatedExpenses });
             });
-            const docRef = doc(db, 'artifacts', appId, 'users', userId, 'monthlyData', month);
-            batch.set(docRef, { expenses: updatedExpenses }, { merge: true });
-        });
 
-        try {
             await batch.commit();
             if (closeModal) setIsConfirmOpen(false);
         } catch(error) {
             console.error("Erro ao apagar parcelas: ", error);
-            showAlert("Erro ao Apagar", `Não foi possível apagar as parcelas.\n\nErro: ${error.code}`);
+            showAlert("Erro ao Apagar", `Não foi possível apagar as parcelas.\n\nErro: ${error.message}`);
+            if (closeModal) setIsConfirmOpen(false);
         }
     };
 
