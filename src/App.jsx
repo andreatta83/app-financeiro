@@ -3,7 +3,7 @@ import { initializeApp } from 'firebase/app';
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'firebase/auth';
 import { getFirestore, doc, onSnapshot, setDoc, updateDoc, collection, query, addDoc, deleteDoc, getDoc, getDocs, writeBatch, orderBy } from 'firebase/firestore';
 import { getAnalytics } from "firebase/analytics";
-import { Landmark, CreditCard, TrendingUp, LayoutDashboard, Plus, Trash2, Edit, X, ArrowDown, ArrowUp, LogOut, KeyRound, Target, ChevronLeft, ChevronRight, Users, UtensilsCrossed, HandCoins, ArrowRightLeft, Filter } from 'lucide-react';
+import { Landmark, CreditCard, TrendingUp, LayoutDashboard, Plus, Trash2, Edit, X, ArrowDown, ArrowUp, LogOut, KeyRound, Target, ChevronLeft, ChevronRight, Users, UtensilsCrossed, HandCoins, ArrowRightLeft } from 'lucide-react';
 import { PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 
 
@@ -543,7 +543,7 @@ const CardControl = ({ db, userId, showAlert, currentMonth }) => {
     const [totalInstallments, setTotalInstallments] = useState(1);
 
     const [isConfirmOpen, setIsConfirmOpen] = useState(false);
-    const [actionToConfirm, setActionToConfirm] = useState(null);
+    const [itemToDelete, setItemToDelete] = useState(null);
 
     const cardsCollectionRef = useMemo(() => {
         if (!userId) return null;
@@ -584,9 +584,10 @@ const CardControl = ({ db, userId, showAlert, currentMonth }) => {
     };
 
     const requestDeleteCard = (cardId) => {
-        setActionToConfirm(() => () => performDeleteCard(cardId));
+        setItemToDelete({ type: 'card', id: cardId });
         setIsConfirmOpen(true);
     };
+    
     const performDeleteCard = async (cardId) => {
         try {
             await deleteDoc(doc(cardsCollectionRef, cardId));
@@ -627,6 +628,12 @@ const CardControl = ({ db, userId, showAlert, currentMonth }) => {
         const value = parseFloat(expenseValue);
         if (isNaN(value)) return;
 
+        const card = cards.find(c => c.id === currentCardId);
+        if (!card) return;
+
+        const batch = writeBatch(db);
+        
+        // If editing, remove old entries first
         if (editingExpense) {
             if (editingExpense.isInstallment) {
                 await performDeleteInstallment(currentCardId, editingExpense.installmentId, false);
@@ -634,17 +641,15 @@ const CardControl = ({ db, userId, showAlert, currentMonth }) => {
                 await performDeleteSingleExpense(currentCardId, editingExpense.id, false);
             }
         }
+        
+        // Refetch card data to work with the latest state after potential deletion
+        const currentCardDoc = await getDoc(doc(cardsCollectionRef, currentCardId));
+        const currentCardData = currentCardDoc.data();
+        let cardExpenses = [...(currentCardData.expenses || [])];
 
-        const card = cards.find(c => c.id === currentCardId);
-        if (!card) return;
-
-        const batch = writeBatch(db);
         const installmentId = isInstallment ? (editingExpense?.installmentId || Date.now().toString()) : null;
         const numTotalInstallments = isInstallment ? parseInt(totalInstallments) : 1;
         const numCurrentInstallment = isInstallment ? parseInt(currentInstallment) : 1;
-
-        let cardExpenses = [...(card.expenses || [])].filter(e => e.installmentId !== editingExpense?.installmentId && e.id !== editingExpense?.id);
-
 
         for (let i = 0; i < numTotalInstallments - (numCurrentInstallment - 1); i++) {
             const installmentNumber = numCurrentInstallment + i;
@@ -653,7 +658,7 @@ const CardControl = ({ db, userId, showAlert, currentMonth }) => {
             const installmentMonthStr = installmentDate.toISOString().slice(0, 7);
             const installmentDateStr = installmentDate.toISOString().slice(0, 10);
             
-            const expenseId = Date.now().toString() + i;
+            const expenseId = `${Date.now()}-${i}-${Math.random().toString(36).slice(2)}`;
             const description = isInstallment ? `${expenseDescription} (${installmentNumber}/${numTotalInstallments})` : expenseDescription;
 
             const newExpenseForCard = { 
@@ -669,12 +674,14 @@ const CardControl = ({ db, userId, showAlert, currentMonth }) => {
 
             const monthlyDocRef = doc(db, 'artifacts', appId, 'users', userId, 'monthlyData', installmentMonthStr);
             const monthlyDocSnap = await getDoc(monthlyDocRef);
-            const monthlyData = monthlyDocSnap.exists() ? monthlyDocSnap.data() : { expenses: {} };
-            const typeExpenses = monthlyData.expenses[expenseType] || [];
-            const updatedTypeExpenses = [...typeExpenses, newExpenseForMonthly];
-            const updatedMonthlyExpenses = { ...monthlyData.expenses, [expenseType]: updatedTypeExpenses };
+            let monthlyData = monthlyDocSnap.exists() ? monthlyDocSnap.data() : { expenses: {} };
             
-            batch.set(monthlyDocRef, { expenses: updatedMonthlyExpenses }, { merge: true });
+            // Ensure expenses object and type array exist
+            if (!monthlyData.expenses) monthlyData.expenses = {};
+            if (!monthlyData.expenses[expenseType]) monthlyData.expenses[expenseType] = [];
+
+            monthlyData.expenses[expenseType].push(newExpenseForMonthly);
+            batch.set(monthlyDocRef, { expenses: monthlyData.expenses }, { merge: true });
         }
         
         const cardDocRef = doc(cardsCollectionRef, currentCardId);
@@ -692,27 +699,38 @@ const CardControl = ({ db, userId, showAlert, currentMonth }) => {
     const requestDeleteExpense = (cardId, expenseId) => {
         const card = cards.find(c => c.id === cardId);
         const expense = (card?.expenses || []).find(e => e.id === expenseId);
-        if (expense?.isInstallment) {
-            setActionToConfirm(() => () => performDeleteInstallment(cardId, expense.installmentId));
-            setIsConfirmOpen(true);
-        } else {
-            setActionToConfirm(() => () => performDeleteSingleExpense(cardId, expenseId));
-            setIsConfirmOpen(true);
+        setItemToDelete({ type: 'expense', cardId, expense });
+        setIsConfirmOpen(true);
+    };
+
+    const handleConfirmDelete = () => {
+        if (!itemToDelete) return;
+
+        if (itemToDelete.type === 'card') {
+            performDeleteCard(itemToDelete.id);
+        } else if (itemToDelete.type === 'expense') {
+            const { cardId, expense } = itemToDelete;
+            if (expense?.isInstallment) {
+                performDeleteInstallment(cardId, expense.installmentId);
+            } else {
+                performDeleteSingleExpense(cardId, expense.id);
+            }
         }
     };
 
     const performDeleteSingleExpense = async (cardId, expenseId, closeModal = true) => {
         const batch = writeBatch(db);
         try {
-            const card = cards.find(c => c.id === cardId);
-            if (!card) throw new Error("Card not found in local state");
+            const cardRef = doc(db, 'artifacts', appId, 'users', userId, 'creditCards', cardId);
+            const cardSnap = await getDoc(cardRef);
+            if (!cardSnap.exists()) throw new Error("Card not found");
 
+            const card = { id: cardSnap.id, ...cardSnap.data() };
             const expenseToDelete = (card.expenses || []).find(e => e.id === expenseId);
-            if (!expenseToDelete) throw new Error("Expense not found in local state");
+            if (!expenseToDelete) return;
 
             const updatedCardExpenses = (card.expenses || []).filter(e => e.id !== expenseId);
-            const cardDocRef = doc(cardsCollectionRef, cardId);
-            batch.update(cardDocRef, { expenses: updatedCardExpenses });
+            batch.update(cardRef, { expenses: updatedCardExpenses });
 
             const month = expenseToDelete.date.slice(0, 7);
             const type = expenseToDelete.type;
@@ -729,7 +747,10 @@ const CardControl = ({ db, userId, showAlert, currentMonth }) => {
             }
             
             await batch.commit();
-            if (closeModal) setIsConfirmOpen(false);
+            if (closeModal) {
+                setIsConfirmOpen(false);
+                setItemToDelete(null);
+            }
         } catch(error) {
             console.error("Erro ao apagar despesa:", error);
             showAlert("Erro ao Apagar", `Não foi possível apagar a despesa.\n\nErro: ${error.message}`);
@@ -741,14 +762,15 @@ const CardControl = ({ db, userId, showAlert, currentMonth }) => {
         if (!installmentId) return;
         const batch = writeBatch(db);
         try {
-            const card = cards.find(c => c.id === cardId);
-            if(!card) throw new Error("Card not found in local state");
+            const cardRef = doc(db, 'artifacts', appId, 'users', userId, 'creditCards', cardId);
+            const cardSnap = await getDoc(cardRef);
+            if (!cardSnap.exists()) throw new Error("Card not found");
 
+            const card = { id: cardSnap.id, ...cardSnap.data() };
             const expensesToDelete = (card.expenses || []).filter(e => e.installmentId === installmentId);
             const updatedCardExpenses = (card.expenses || []).filter(e => e.installmentId !== installmentId);
             
-            const cardDocRef = doc(cardsCollectionRef, cardId);
-            batch.update(cardDocRef, { expenses: updatedCardExpenses });
+            batch.update(cardRef, { expenses: updatedCardExpenses });
 
             const monthlyDocsToUpdate = {};
             for (const expense of expensesToDelete) {
@@ -772,11 +794,14 @@ const CardControl = ({ db, userId, showAlert, currentMonth }) => {
             });
 
             await batch.commit();
-            if (closeModal) setIsConfirmOpen(false);
+            if (closeModal) {
+                setIsConfirmOpen(false);
+                setItemToDelete(null);
+            }
         } catch(error) {
             console.error("Erro ao apagar parcelas: ", error);
             showAlert("Erro ao Apagar", `Não foi possível apagar as parcelas.\n\nErro: ${error.message}`);
-            if (closeModal) setIsConfirmOpen(false);
+             if (closeModal) setIsConfirmOpen(false);
         }
     };
 
@@ -785,7 +810,7 @@ const CardControl = ({ db, userId, showAlert, currentMonth }) => {
 
     return (
         <div className="space-y-8">
-            <ConfirmModal isOpen={isConfirmOpen} onClose={() => setIsConfirmOpen(false)} onConfirm={actionToConfirm} message="Tem a certeza que deseja apagar este item? Se for uma despesa parcelada, todas as parcelas serão removidas."/>
+            <ConfirmModal isOpen={isConfirmOpen} onClose={() => setIsConfirmOpen(false)} onConfirm={handleConfirmDelete} message="Tem a certeza que deseja apagar este item? Se for uma despesa parcelada, todas as parcelas serão removidas."/>
             <div className="flex justify-between items-center"><h2 className="text-3xl font-bold text-white">Controle de Cartões</h2><Button onClick={() => openCardModal()}><Plus size={16} /> Novo Cartão</Button></div>
             {cards.length === 0 && <div className="text-center py-16 bg-gray-800 rounded-2xl"><CreditCard size={48} className="mx-auto text-gray-500" /><p className="mt-4 text-gray-400">Nenhum cartão adicionado.</p></div>}
             <div className="space-y-6">
@@ -1426,10 +1451,13 @@ const EventDetails = ({ eventId, db, userId, showAlert }) => {
             cashFlow[p.name] = p.paid - p.owed;
         });
     
-        const debtors = Object.entries(cashFlow).filter(([, amount]) => amount < -0.01).map(([name, amount]) => ({ name, amount: -amount }));
-        const creditors = Object.entries(cashFlow).filter(([, amount]) => amount > 0.01).map(([name, amount]) => ({ name, amount }));
+        let debtors = Object.entries(cashFlow).filter(([, amount]) => amount < -0.01).map(([name, amount]) => ({ name, amount: -amount }));
+        let creditors = Object.entries(cashFlow).filter(([, amount]) => amount > 0.01).map(([name, amount]) => ({ name, amount }));
         const transactions = [];
     
+        debtors.sort((a,b) => b.amount - a.amount);
+        creditors.sort((a,b) => b.amount - a.amount);
+
         while (debtors.length > 0 && creditors.length > 0) {
             const debtor = debtors[0];
             const creditor = creditors[0];
